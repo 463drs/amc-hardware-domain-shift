@@ -1,0 +1,30 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# jupyter
+.ipynb_checkpoints/
+
+# ML artifacts
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+wandb/
+mlruns/
+
+# data
+data/*.hdf5
+data/*.h5
+*.desktop
+# outputs
+outputs/
+*.png
+
+# env / secrets
+.env
+kaggle.json          # ← IMPORTANT: never commit API tokens
+.vscode

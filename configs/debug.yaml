@@ -1,0 +1,15 @@
+# Tiny, CPU-runnable config
+# High SNR + few frames keeps it fast and makes constellations clean for sanity checks.
+data:
+  path: data/GOLD_XYZ_OSC.0001_1024.hdf5
+  frames_per_pair: 20        # 20 frames per (class, SNR) cell
+  subset_seed: 1234
+  snr_min: 20                # high SNR only -> fast + clean constellations
+  snr_max: 30
+  split: [0.7, 0.15, 0.15]   # 20 -> 14 / 3 / 3 per cell
+  split_seed: 5678
+  normalization: unit_power
+train:
+  seed: 0
+  batch_size: 16
+  num_workers: 0             # 0 workers: simplest, no fork/spawn on a laptop

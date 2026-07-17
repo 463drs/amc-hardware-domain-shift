@@ -1,0 +1,17 @@
+# Baseline experiment: CNN trained on clean synthetic RadioML 2018.01A.
+# Everything that affects results lives here. Device (CUDA/CPU) is auto-detected and is
+# deliberately NOT a config value, so this file reproduces the same experiment anywhere.
+data:
+  path: data/GOLD_XYZ_OSC.0001_1024.hdf5
+  #path: data/subset_fpp1024_seed1234_snr-6_30.hdf5
+  frames_per_pair: 1024      # frames drawn per (class, SNR) cell; 4096 == full cell. Main data-scale knob.
+  subset_seed: 1234          # fixed; the subset must be identical across all runs and conditions.
+  snr_min: -6                # inclusive SNR lower bound (dB)
+  snr_max: 30                # inclusive SNR upper bound (dB)
+  split: [0.7, 0.15, 0.15]   # train / val / test, applied WITHIN each (class, SNR) cell
+  split_seed: 5678           # fixed; the split must be identical across all runs
+  normalization: unit_power  # per-frame power normalization (see src/data.py NORMALIZERS)
+train:
+  seed: 0                    # TRAINING seed only; vary this across the ~10 repeats
+  batch_size: 256
+  num_workers: 4
