@@ -12,8 +12,10 @@ tqdm                 # per-epoch progress bars; auto-disabled when stderr is not
 
 # can affect results 
 
-torch==2.10.0
 numpy==2.0.2
 h5py==3.16.0
 scipy==1.16.3
 pyyaml==6.0.2
+
+# making cloud usage easier (by relying on preinstalled version/if not installing newest)
+torch
