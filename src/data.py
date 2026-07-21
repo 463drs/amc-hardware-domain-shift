@@ -30,6 +30,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .config import Config, DataConfig
+from .logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 # Constants
 
@@ -326,10 +329,14 @@ def build_datasets(
 
     if verbose:
         total = len(train_ds) + len(val_ds) + len(test_ds)
-        print(f"[data] frames_per_pair={cfg.frames_per_pair} snr=[{cfg.snr_min},{cfg.snr_max}] "
-              f"normalization={cfg.normalization}")
-        print(f"[data] train={len(train_ds)}  val={len(val_ds)}  test={len(test_ds)}  "
-              f"total={total}")
+        logger.info(
+            "frames_per_pair=%d snr=[%d,%d] normalization=%s",
+            cfg.frames_per_pair, cfg.snr_min, cfg.snr_max, cfg.normalization,
+        )
+        logger.info(
+            "train=%d  val=%d  test=%d  total=%d",
+            len(train_ds), len(val_ds), len(test_ds), total,
+        )
 
     return train_ds, val_ds, test_ds
 

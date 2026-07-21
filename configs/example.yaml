@@ -1,0 +1,39 @@
+# Config example
+# Everything that affects results lives here. Device (CUDA/CPU) is auto-detected and is
+# deliberately NOT a config value, so this file reproduces the same experiment anywhere.
+data:
+  path: data/GOLD_XYZ_OSC.0001_1024.hdf5
+  #path: data/subset_fpp1024_seed1234_snr-6_30.hdf5
+  frames_per_pair: 1024      # frames drawn per (class, SNR) cell; 4096 == full cell. Main data-scale knob.
+  subset_seed: 1234          # fixed; the subset must be identical across all runs and conditions.
+  snr_min: -6                # inclusive SNR lower bound (dB)
+  snr_max: 30                # inclusive SNR upper bound (dB)
+  split: [0.7, 0.15, 0.15]   # train / val / test, applied WITHIN each (class, SNR) cell
+  split_seed: 5678           # fixed; the split must be identical across all runs
+  normalization: unit_power  # per-frame power normalization (see src/data.py NORMALIZERS)
+model:
+  dropout_p: 0.5             # AlphaDropout rate in the SELU dense head
+  init_scheme: kaiming_linear  # named weight-init method (resolved by src/models.py)
+train:
+  seed: 0                    # TRAINING seed only; vary this across the ~10 repeats
+  batch_size: 256
+  num_workers: 4
+  optimizer:                 # name resolved by src/train.py; learning_rate/weight_decay below
+    name: adam
+    kwargs: {}               # extra optimizer args (e.g. betas); none beyond lr/weight_decay here
+  learning_rate: 0.001       # Adam default; O'Shea et al. train with Adam
+  weight_decay: 0.0          # no L2 penalty in the baseline
+  lr_scheduler:              # name resolved by src/train.py
+    name: reduce_on_plateau
+    kwargs:                  # forwarded verbatim to torch.optim.lr_scheduler.ReduceLROnPlateau
+      mode: min              # watches val_loss (see early_stopping_metric), so lower is better
+      factor: 0.5            # multiply LR by this on plateau
+      patience: 5            # scheduler patience < early_stopping_patience: drop LR before giving up
+  max_epochs: 150            # hard ceiling; early stopping usually halts well before this
+  early_stopping_patience: 15  # stop after this many epochs without val improvement
+  early_stopping_metric: val_loss  # less noisy than val_accuracy for classification early stopping
+  amp_enabled: false         # mixed precision on GPU; disable if SELU/AlphaDropout go unstable
+experiment:                  # tracking metadata (provenance); does NOT affect results
+  project: amc-hardware-domain-shift  # W&B project; the same across all 5 conditions
+  condition: baseline        # experimental condition = W&B group; run name is condition_seed
+  mode: online               # online | offline | disabled ("disabled" makes W&B a no-op)

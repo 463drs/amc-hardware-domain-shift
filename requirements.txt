@@ -7,6 +7,8 @@ ipython
 ipykernel
 pytest
 nbstripout
+wandb                # experiment tracking; runs can set experiment.mode: disabled to skip it
+tqdm                 # per-epoch progress bars; auto-disabled when stderr is not a TTY
 
 # can affect results 
 
