@@ -1,5 +1,5 @@
 data:
-  path: data/GOLD_XYZ_OSC.0001_1024.hdf5
+  path: data/subset_fpp384_seed1234_snr-20_30.hdf5
   frames_per_pair: 384
   subset_seed: 1234
   snr_min: -20
