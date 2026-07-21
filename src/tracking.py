@@ -8,11 +8,20 @@ the test suite and `experiment.mode: disabled` runs work with wandb not installe
 from __future__ import annotations
 
 import hashlib
+import torch
 
 from src.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+def _environment_metadata() -> dict:
+    """Runtime environment actually used, for the W&B record (not the fingerprint)."""
+    meta = {
+        "env/torch": torch.__version__,
+        "env/cuda": torch.version.cuda,
+        "env/gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+    }
+    return meta
 
 def _deterministic_run_id(run_name: str) -> str:
     """Stable W&B run id derived only from the run name (condition + seed).
@@ -46,6 +55,7 @@ def _init_wandb(experiment, run_name: str, wandb_id: str, config_dict: dict,
             f"experiment.mode={experiment.mode!r} needs the 'wandb' package; "
             f"install it (pip install wandb) or set experiment.mode: disabled."
         ) from exc
+    config_dict = {**config_dict, **_environment_metadata()}
     run = wandb.init(
         project=experiment.project,
         group=experiment.condition,
