@@ -27,7 +27,7 @@ reused across all):**
    measured on the actual receiver (RTL-SDR Blog V4, R828D).
 
 **Statistical protocol:** each condition trained over N independent runs
-(train.seed varied, architecture/data fixed, N determined after pilot timing
+(train.seeds varied, architecture/data fixed, N determined after pilot timing
 run), reported as mean +/- std.
 
 **Evaluation:**

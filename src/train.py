@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 
-from src.checkpointing import _load_checkpoint, _resolve_resume_target, _save_checkpoint
+from src.checkpointing import load_checkpoint, resolve_resume_target, save_checkpoint
 from src.config import (
     Config,
     TrainConfig,
@@ -349,7 +349,7 @@ def fit(
             best_epoch = epoch
             epochs_no_improve = 0
             if checkpoint_path is not None:
-                _save_checkpoint(checkpoint_path, model=model, optimizer=optimizer,
+                save_checkpoint(checkpoint_path, model=model, optimizer=optimizer,
                                  scheduler=scheduler, scaler=scaler, epoch=epoch,
                                  best_metric=best_metric, epochs_no_improve=epochs_no_improve,
                                  run_id=run_id, config_metadata=checkpoint_metadata)
@@ -364,7 +364,7 @@ def fit(
         # than replaying every epoch since the last improvement. Saved before the early-stop
         # break so the final epoch is captured too.
         if last_checkpoint_path is not None:
-            _save_checkpoint(last_checkpoint_path, model=model, optimizer=optimizer,
+            save_checkpoint(last_checkpoint_path, model=model, optimizer=optimizer,
                              scheduler=scheduler, scaler=scaler, epoch=epoch,
                              best_metric=best_metric, epochs_no_improve=epochs_no_improve,
                              run_id=run_id, config_metadata=checkpoint_metadata)
@@ -387,7 +387,7 @@ def fit(
 
 def _load_resume_state(
     resume_path: Optional[Path], *, model, optimizer, scheduler, scaler, device,
-    current_fingerprint: dict, allow_config_change: bool, early_stopping_metric: str,
+    current_fingerprint: dict, early_stopping_metric: str,
 ):
     """Load a resume checkpoint and verify its config against the current one.
 
@@ -404,7 +404,7 @@ def _load_resume_state(
 
     # Restores model/optimizer/scheduler/scaler AND the RNG state (last), so training
     # continues the same stream. set_seed was deliberately skipped by the caller.
-    state = _load_checkpoint(
+    state = load_checkpoint(
         resume_path, model=model, optimizer=optimizer, scheduler=scheduler,
         scaler=scaler, device=device,
     )
@@ -429,17 +429,11 @@ def _load_resume_state(
         if diff:
             detail = (f"config changed since {resume_path} was written "
                       f"({len(diff)} key(s) differ):\n{_format_fingerprint_diff(diff)}")
-            if allow_config_change:
-                config_drift_allowed = True
-                logger.warning("%s\ncontinuing anyway (allow_config_change); W&B config "
-                               "will be updated for: %s",
-                               detail, ", ".join(key for key, _, _ in diff))
-            else:
-                raise RuntimeError(
-                    f"{detail}\nResuming would train under a config matching no run on "
-                    f"record. Pass --allow-config-change to override, --fresh to retrain "
-                    f"from scratch, or --run-id NAME to start a separate run."
-                )
+            raise RuntimeError(
+                f"{detail}\nResuming would train under a config matching no run on "
+                f"record. Pass --allow-config-change to override, --fresh to retrain "
+                f"from scratch, or --run-id NAME to start a separate run."
+            )
 
     return start_epoch, best_metric, resumed_no_improve, config_drift_allowed
 
@@ -464,32 +458,32 @@ def _make_wandb_epoch_callback(run):
 
 # Entry point
 
-def main(
+def train(
     config_path: str,
+    seed: int, 
     resume: "str | bool | None" = None,
     fresh: bool = False,
-    run_id: Optional[str] = None,
-    allow_config_change: bool = False,
 ) -> dict:
     """Train a model end-to-end from a config; return the fit() summary plus run metadata.
 
     Parameters
     ----------
     config_path : a config name ("baseline"), filename, or path (see resolve_config_path).
+    seed        : seed to lock rng
     resume      : None = start fresh, but REFUSE if the run dir already holds a checkpoint;
                   True = continue from the newer of last.pt/best.pt; a path = that checkpoint.
     fresh       : discard any existing checkpoints and train from epoch 1.
     run_id      : optional override of the run NAME; defaults to "<condition>_<seed>".
-    allow_config_change : downgrade the config-drift check from an error to a warning.
     """
     config = Config.from_yaml(resolve_config_path(config_path))
     tcfg = config.train
     exp = config.experiment
+    seed = int(seed)
 
     # Run identity is a deterministic function of condition + training seed (NOT the config
     # filename, NOT a timestamp), so a restarted session reuses the same W&B run and the same
     # local checkpoint directory. `run_id` (CLI) overrides only the human-readable name.
-    run_name = run_id or f"{exp.condition}_{tcfg.seed}"
+    run_name = f"{exp.condition}_{seed}"
     wandb_id = _deterministic_run_id(run_name)
     run_dir = OUTPUTS_DIR / run_name
     best_ckpt = run_dir / "best.pt"
@@ -498,7 +492,7 @@ def main(
     configure_logging(log_file=run_dir / "train.log")
     logger.info("run=%s  wandb_id=%s  config=%s", run_name, wandb_id, config.source_path)
 
-    resume_path = _resolve_resume_target(resume, fresh, run_dir, last_ckpt, best_ckpt)
+    resume_path = resolve_resume_target(resume, fresh, run_dir, last_ckpt, best_ckpt)
 
     # cuDNN determinism applies to BOTH paths. A resumed run skips set_seed (it restores the
     # checkpointed RNG stream instead), so these flags must be pinned separately or the resumed
@@ -508,11 +502,11 @@ def main(
     # RNG state is restored below (after the modules load) so the stream continues from where
     # the interrupted run left off, instead of snapping back to the epoch-1 initial state.
     if resume_path is None:
-        set_seed(tcfg.seed)
+        set_seed(seed)
     device = get_device()
     logger.info("device=%s  amp_enabled=%s", device, tcfg.amp_enabled)
 
-    train_loader, val_loader, _test_loader = build_dataloaders(config)
+    train_loader, val_loader, _test_loader = build_dataloaders(config, seed)
 
     model = build_model(config.model, n_classes=len(MODULATION_CLASSES)).to(device)
     optimizer = build_optimizer(model, tcfg)
@@ -526,7 +520,6 @@ def main(
     start_epoch, best_metric, resumed_no_improve, config_drift_allowed = _load_resume_state(
         resume_path, model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
         device=device, current_fingerprint=fingerprint,
-        allow_config_change=allow_config_change,
         early_stopping_metric=tcfg.early_stopping_metric,
     )
 

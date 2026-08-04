@@ -48,7 +48,7 @@ def _restore_rng_states(rng_states: dict) -> None:
 
 # Save / load
 
-def _save_checkpoint(
+def save_checkpoint(
     path: Path, *, model, optimizer, scheduler, scaler, epoch, best_metric, epochs_no_improve,
     run_id, config_metadata: Optional[dict] = None,
 ) -> None:
@@ -73,7 +73,7 @@ def _save_checkpoint(
     torch.save(payload, path)
 
 
-def _load_checkpoint(path: Path, *, model, optimizer, scheduler, scaler, device, restore_rng=True):
+def load_checkpoint(path: Path, *, model, optimizer, scheduler, scaler, device, restore_rng=True):
     """Restore model/optimizer/scheduler (+ scaler + RNG when present) from a checkpoint.
 
     Returns the loop bookkeeping needed to continue: epoch, best_metric, epochs_no_improve, plus
@@ -128,7 +128,7 @@ def select_resume_checkpoint(*paths: Path) -> Optional[Path]:
     return chosen
 
 
-def _resolve_resume_target(
+def resolve_resume_target(
     resume: "str | bool | None", fresh: bool, run_dir: Path, last_ckpt: Path, best_ckpt: Path
 ) -> Optional[Path]:
     """Resolve the three-state resume contract into a checkpoint path (None == start fresh).

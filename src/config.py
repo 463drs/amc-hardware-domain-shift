@@ -106,12 +106,12 @@ def _coerce_named_component(value: object, label: str) -> "NamedComponentConfig"
 class TrainConfig:
     """Training-side knobs that still affect results and therefore live in the config.
 
-    NOTE: `seed` here is the TRAINING seed (model init, shuffling, dropout). It is
+    NOTE: `seeds` here is the TRAINING seeds (model init, shuffling, dropout). It is
     intentionally separate from data.subset_seed and data.split_seed so that the exact
     same data can be reused across many training seeds.
     """
 
-    seed: int
+    seeds: list[int]
     batch_size: int
     num_workers: int
     optimizer: NamedComponentConfig       # {name, kwargs}; learning_rate/weight_decay passed separately

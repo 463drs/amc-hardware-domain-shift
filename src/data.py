@@ -356,7 +356,7 @@ def _worker_init_fn(worker_id: int) -> None:
 
 
 def build_dataloaders(
-    config: Config, verbose: bool = True
+    config: Config, seed:int, verbose: bool = True
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Build (train, val, test) DataLoaders with reproducible shuffling and fork-safe workers.
 
@@ -367,7 +367,7 @@ def build_dataloaders(
     train_ds, val_ds, test_ds = build_datasets(config, verbose=verbose)
 
     generator = torch.Generator()
-    generator.manual_seed(config.train.seed)
+    generator.manual_seed(seed)
 
     common = dict(
         batch_size=config.train.batch_size,

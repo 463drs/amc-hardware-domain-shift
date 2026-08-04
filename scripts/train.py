@@ -1,19 +1,18 @@
 """CLI entry point for training. All logic lives in src.train.
 
     python scripts/train.py --config configs/baseline.yaml
-    python scripts/train.py --config baseline --resume
-    python scripts/train.py --config baseline --resume outputs/baseline_0/last.pt
-    python scripts/train.py --config baseline --fresh
 """
 
 import sys
 from pathlib import Path
 
+#resume disabled untill first learning crash
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import argparse
 
-from src.train import main
+from src.train import train
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     importable and unit-testable without argparse consuming the caller's argv."""
     parser = argparse.ArgumentParser(description="Train an AMC model from a YAML config.")
     parser.add_argument("--config", required=True, help="config name or path (see configs/)")
-
+    parser.add_argument("--seed", required=True, help="seed to lock rng")
     # --resume and --fresh are opposite intents; let argparse reject the combination rather
     # than resolving it silently.
     intent = parser.add_mutually_exclusive_group()
@@ -31,15 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     intent.add_argument("--fresh", action="store_true",
                         help="ignore any existing checkpoints and train from epoch 1")
 
-    parser.add_argument("--allow-config-change", action="store_true",
-                        help="permit resuming when the config differs from the checkpoint's "
-                             "(warns with a diff instead of refusing)")
-    parser.add_argument("--run-id", default=None,
-                        help="override the run name (default: <condition>_<seed>)")
     return parser
 
 
 if __name__ == "__main__":
     args = build_parser().parse_args()
-    main(args.config, resume=args.resume, fresh=args.fresh,
-         run_id=args.run_id, allow_config_change=args.allow_config_change)
+    train(args.config, seed=args.seed, resume=None, fresh=True)

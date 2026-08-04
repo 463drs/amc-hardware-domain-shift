@@ -11,7 +11,7 @@ model:
   dropout_p: 0.5
   init_scheme: kaiming_linear
 train:
-  seed: 0
+  seeds: {1,2,3}
   batch_size: 256
   num_workers: 4
   optimizer:
