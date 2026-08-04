@@ -57,7 +57,8 @@ if __name__ == "__main__":
                 seed = task_queue.get_nowait()
             except queue.Empty:
                 break
-
+            if seed:
+                print(f'starting train at device: {gpu_id}')
             cmd = [
                 sys.executable,
                 "-u",
