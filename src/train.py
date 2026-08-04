@@ -52,7 +52,7 @@ from src.fingerprint import _config_fingerprint, _fingerprint_diff, _format_fing
 from src.logging_utils import configure_logging, get_logger
 from src.metrics import snr_bucket
 from src.models import build_model
-from src.tracking import _deterministic_run_id, _init_wandb
+from src.tracking import _deterministic_run_id, _init_wandb, log_checkpoint_artifact
 
 logger = get_logger(__name__)
 
@@ -340,7 +340,7 @@ def fit(
                 "val/loss": va["loss"], "val/accuracy": va["accuracy"],
                 "val/accuracy_snr_geq_0db": va["accuracy_snr_geq_0db"],
                 "val/snr_accuracy": va["snr_accuracy"],   # {bin: acc}; main formats for W&B
-                "lr": lr,
+                "lr": lr, "is_best":improved
             })
 
         improved = _is_improvement(monitored, best_metric, mode)
@@ -438,7 +438,7 @@ def _load_resume_state(
     return start_epoch, best_metric, resumed_no_improve, config_drift_allowed
 
 
-def _make_wandb_epoch_callback(run):
+def _make_wandb_epoch_callback(run, best_ckpt: Path, run_id: str):
     """Build fit()'s on_epoch_end callback, logging each epoch's metrics to a W&B run."""
 
     def _on_epoch_end(epoch: int, metrics: Dict[str, object]) -> None:
@@ -447,11 +447,19 @@ def _make_wandb_epoch_callback(run):
         # Split the per-SNR dict out of the flat scalars; log each SNR bin as its own scalar
         # series (val_snr/<bin>dB) so W&B renders per-SNR accuracy curves over epochs, next to
         # the aggregate train/val scalars.
+        is_best = metrics.get("is_best", False)
         snr_accuracy = metrics.get("val/snr_accuracy") or {}
-        payload = {k: v for k, v in metrics.items() if k != "val/snr_accuracy"}
+        payload = {
+            k: v for k, v in metrics.items() 
+            if k not in ("val/snr_accuracy", "is_best")
+        }
         for bin_db, acc in snr_accuracy.items():
             payload[f"val_snr/{bin_db}dB"] = acc
+
         run.log(payload, step=epoch)
+
+        if is_best:
+            log_checkpoint_artifact(run, best_ckpt, run_id, alias="best")
 
     return _on_epoch_end
 
@@ -540,7 +548,7 @@ def train(
             last_checkpoint_path=last_ckpt,
             checkpoint_metadata=fingerprint,
             run_id=run_name,
-            on_epoch_end=_make_wandb_epoch_callback(run),
+            on_epoch_end=_make_wandb_epoch_callback(run, best_ckpt=best_ckpt, run_id=run_name),
         )
     finally:
         # Always close the W&B run, even if training raises, so the run isn't left "running".

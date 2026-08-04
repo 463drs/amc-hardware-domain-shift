@@ -33,6 +33,17 @@ def _deterministic_run_id(run_name: str) -> str:
     return hashlib.sha1(run_name.encode("utf-8")).hexdigest()[:16]
 
 
+def log_checkpoint_artifact(run, checkpoint_path, run_id: str, alias: str) -> None:
+    """Upload a checkpoint file to W&B as an artifact, if tracking is active."""
+    if run is None or checkpoint_path is None or not checkpoint_path.exists():
+        return
+    
+    import wandb
+    
+    artifact = wandb.Artifact(name=f"{run_id}-{alias}", type="model")
+    artifact.add_file(str(checkpoint_path))
+    run.log_artifact(artifact, aliases=[alias])
+
 def _init_wandb(experiment, run_name: str, wandb_id: str, config_dict: dict,
                 allow_val_change: bool = False):
     """Initialize W&B tracking, or return None when disabled.
