@@ -14,11 +14,20 @@ import queue
 import subprocess
 import os
 import threading
+import time
+from dotenv import load_dotenv
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
+from src.telegram_notification import send_telegram_notification
 from src.config import Config, TrainConfig, resolve_config_path
+
+load_dotenv()
+
+bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the training CLI. A function (not module-level) so the flag contract stays
@@ -44,6 +53,10 @@ if __name__ == "__main__":
     num_gpus = torch.cuda.device_count()
     num_workers = max(1, num_gpus)
     task_queue = queue.Queue()
+
+    start_time = time.time()
+    send_telegram_notification(bot_token, chat_id, text=f"Starting training: \nconfig: {args.config}")
+    
     for seed in seeds:
         task_queue.put(seed)
 
@@ -66,10 +79,16 @@ if __name__ == "__main__":
                 "--config", args.config,
                 "--seed", str(seed),
             ]
-            
-            subprocess.run(cmd, env=env, check=True)
-            task_queue.task_done()
-    
+            try:
+                subprocess.run(cmd, env=env, check=True)
+            except subprocess.CalledProcessError as e:
+                send_telegram_notification(
+                    bot_token, chat_id,
+                    text=f"Training failed: \ndevice: {gpu_id}\nseed: {seed}\nconfig: {args.config}\nExit code: {e}"
+                )
+            finally:
+                task_queue.task_done()
+
     threads = []
     
     for gpu_id in range(num_workers):
@@ -79,3 +98,12 @@ if __name__ == "__main__":
 
     for t in threads:
         t.join()
+    elapsed_sec = int(time.time() - start_time)
+    hours, remainder = divmod(elapsed_sec, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    send_telegram_notification(
+        bot_token, chat_id, 
+        text=f"Training complete:\nconfig: {args.config}\ntime elapsed: {formatted_time}"
+        )
