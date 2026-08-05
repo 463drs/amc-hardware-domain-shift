@@ -15,7 +15,6 @@ import subprocess
 import os
 import threading
 import time
-from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -24,7 +23,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 from src.telegram_notification import send_telegram_notification
 from src.config import Config, TrainConfig, resolve_config_path
 
-load_dotenv()
+try:
+    from kaggle_secrets import UserSecretsClient # type: ignore
+    user_secrets = UserSecretsClient()
+    os.environ["TELEGRAM_BOT_TOKEN"] = user_secrets.get_secret("TELEGRAM_BOT_TOKEN")
+    os.environ["TELEGRAM_CHAT_ID"] = user_secrets.get_secret("TELEGRAM_CHAT_ID")
+except Exception:
+    from dotenv import load_dotenv
+    load_dotenv()
 
 bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 chat_id = os.getenv("TELEGRAM_CHAT_ID")
