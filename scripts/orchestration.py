@@ -83,9 +83,10 @@ if __name__ == "__main__":
                 "-u",
                 "scripts/train.py",
                 "--config", args.config,
-                "--seed", str(seed),
-                "--fresh", args.fresh
+                "--seed", str(seed)
             ]
+            if args.fresh:
+                cmd.append("--fresh")
             try:
                 subprocess.run(cmd, env=env, check=True)
             except subprocess.CalledProcessError as e:
