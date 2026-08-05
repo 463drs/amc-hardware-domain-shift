@@ -333,6 +333,8 @@ def fit(
             epoch, max_epochs, tr["loss"], tr["accuracy"],
             va["loss"], va["accuracy"], va["accuracy_snr_geq_0db"], lr,
         )
+        
+        improved = _is_improvement(monitored, best_metric, mode)
 
         if on_epoch_end is not None:
             on_epoch_end(epoch, {
@@ -343,7 +345,6 @@ def fit(
                 "lr": lr, "is_best":improved
             })
 
-        improved = _is_improvement(monitored, best_metric, mode)
         if improved:
             best_metric = monitored
             best_epoch = epoch
