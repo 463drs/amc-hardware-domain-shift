@@ -13,7 +13,7 @@ model:
 train:
   seeds: {10,11,12,13,14}
   batch_size: 256
-  num_workers: 6
+  num_workers: 3
   optimizer:
     name: adam
     kwargs: {}
