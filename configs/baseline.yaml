@@ -11,9 +11,9 @@ model:
   dropout_p: 0.5
   init_scheme: kaiming_linear
 train:
-  seeds: {1,2,3}
+  seeds: {10,11,12,13,14}
   batch_size: 256
-  num_workers: 4
+  num_workers: 6
   optimizer:
     name: adam
     kwargs: {}

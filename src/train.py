@@ -37,6 +37,7 @@ from typing import Callable, Dict, Optional
 import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
+from datetime import datetime
 
 from src.checkpointing import load_checkpoint, resolve_resume_target, save_checkpoint
 from src.config import (
@@ -492,7 +493,14 @@ def train(
     # Run identity is a deterministic function of condition + training seed (NOT the config
     # filename, NOT a timestamp), so a restarted session reuses the same W&B run and the same
     # local checkpoint directory. `run_id` (CLI) overrides only the human-readable name.
-    run_name = f"{exp.condition}_{seed}"
+    if fresh:
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        run_name = f"{exp.condition}_{seed}_{ts}"
+    else:
+        run_name = f"{exp.condition}_{seed}"
+
+    
+    # if fresh not really deterministic anymore, but easier to manage
     wandb_id = _deterministic_run_id(run_name)
     run_dir = OUTPUTS_DIR / run_name
     best_ckpt = run_dir / "best.pt"

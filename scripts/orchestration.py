@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="continue an existing run: bare --resume auto-selects the newer "
                              "of last.pt/best.pt; --resume PATH resumes that exact checkpoint")
     intent.add_argument("--fresh", action="store_true",
-                        help="ignore any existing checkpoints and train from epoch 1")
+                        help="ignore any existing checkpoints and train from epoch 1, makes run id not determenistic")
 
     return parser
 
@@ -84,6 +84,7 @@ if __name__ == "__main__":
                 "scripts/train.py",
                 "--config", args.config,
                 "--seed", str(seed),
+                "--fresh", args.fresh
             ]
             try:
                 subprocess.run(cmd, env=env, check=True)
