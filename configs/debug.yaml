@@ -9,6 +9,7 @@ data:
   split: [0.7, 0.15, 0.15]   # 20 -> 14 / 3 / 3 per cell
   split_seed: 5678
   normalization: unit_power
+  preload: true
 model:
   dropout_p: 0.5
   init_scheme: kaiming_linear

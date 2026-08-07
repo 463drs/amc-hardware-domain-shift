@@ -47,6 +47,7 @@ class DataConfig:
     split: Tuple[float, float, float]  # (train, val, test) fractions, within each (class, SNR) cell
     split_seed: int               # fixed seed for the stratified split; independent of training seed
     normalization: str            # named per-frame normalization method (see data.NORMALIZERS)
+    preload: bool                # if true - all dataset will be loaded to the RAM
 
     def __post_init__(self) -> None:
         # split may arrive from YAML as a list; normalize to a tuple and validate.
@@ -63,6 +64,10 @@ class DataConfig:
             raise ValueError(f"data.snr_min ({self.snr_min}) must be <= data.snr_max ({self.snr_max})")
         if not isinstance(self.normalization, str) or not self.normalization:
             raise ValueError(f"data.normalization must be a non-empty string, got {self.normalization!r}")
+        # Require an actual bool (like train.amp_enabled): a truthiness check would silently
+        # accept YAML `1` or the string "false" -- the latter would turn preloading ON.
+        if not isinstance(self.preload, bool):
+            raise ValueError(f"data.preload must be a boolean, got {self.preload!r}")
 
 
 @dataclass

@@ -11,6 +11,7 @@ data:
   split: [0.7, 0.15, 0.15]   # train / val / test, applied WITHIN each (class, SNR) cell
   split_seed: 5678           # fixed; the split must be identical across all runs
   normalization: unit_power  # per-frame power normalization (see src/data.py NORMALIZERS)
+  preload: true
 model:
   dropout_p: 0.5             # AlphaDropout rate in the SELU dense head
   init_scheme: kaiming_linear  # named weight-init method (resolved by src/models.py)

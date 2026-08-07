@@ -7,6 +7,7 @@ data:
   split: [0.7, 0.15, 0.15]
   split_seed: 5678
   normalization: unit_power
+  preload: true
 model:
   dropout_p: 0.5
   init_scheme: kaiming_linear

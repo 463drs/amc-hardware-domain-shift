@@ -75,6 +75,15 @@ NORMALIZERS: Dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "unit_power": _normalize_unit_power,
 }
 
+def _normalize_unit_power_batched(x: torch.Tensor) -> torch.Tensor:
+    power = x.pow(2).sum(dim=1).mean(dim=1)
+    return x / torch.sqrt(power + _NORM_EPS).view(-1, 1, 1)
+
+
+BATCHED_NORMALIZERS = {
+    "none": lambda x: x,
+    "unit_power": _normalize_unit_power_batched,
+}
 
 def _get_normalizer(name: str) -> Callable[[torch.Tensor], torch.Tensor]:
     if name not in NORMALIZERS:
@@ -231,6 +240,7 @@ class RadioMLDataset(Dataset):
         snr: np.ndarray,
         normalization: str,
         frame_length: int,
+        preload: bool
     ) -> None:
         assert len(indices) == len(class_idx) == len(snr), "indices/labels/snr length mismatch"
         self.path = str(path)
@@ -239,11 +249,28 @@ class RadioMLDataset(Dataset):
         self.snr = np.asarray(snr, dtype=np.int64)
         self.normalization = normalization
         self.frame_length = int(frame_length)
+        self.preload = preload
         self._normalize = _get_normalizer(normalization)  # validates the name early
-        self._file: Optional[h5py.File] = None             # opened lazily, per worker
+        self._file: Optional[h5py.File] = None
+        self.x = self._load_all() if preload else None
 
     def __len__(self) -> int:
         return len(self.indices)
+    
+    def _load_all(self, block: int = 8192) -> torch.Tensor:
+        out = np.empty((len(self.indices), self.frame_length, 2), dtype=np.float32)
+        with h5py.File(self.path, "r") as f:
+            dset = f[KEY_X]
+            for a in range(0, len(self.indices), block):
+                out[a:a + block] = dset[self.indices[a:a + block]]
+        x = torch.from_numpy(out).permute(0, 2, 1).contiguous()
+        return BATCHED_NORMALIZERS[self.normalization](x)
+
+    def _read_one(self, i: int) -> torch.Tensor:
+        raw = self._handle()[KEY_X][int(self.indices[i])]
+        iq_np = np.ascontiguousarray(raw.T, dtype=np.float32)
+        assert iq_np.shape == (2, self.frame_length)
+        return self._normalize(torch.from_numpy(iq_np))
 
     def _handle(self) -> h5py.File:
         """Return this worker's own read-only HDF5 handle, opening it on first use."""
@@ -252,16 +279,8 @@ class RadioMLDataset(Dataset):
         return self._file
 
     def __getitem__(self, i: int) -> Tuple[torch.Tensor, int, int]:
-        global_row = int(self.indices[i])
-        raw = self._handle()[KEY_X][global_row]          # (T, 2) float32, layout (time, [I, Q])
-        # Transpose (T, 2) -> (2, T): channels-first for Conv1d. ascontiguousarray is required
-        # because torch.from_numpy cannot take the negative strides a bare .T produces.
-        iq_np = np.ascontiguousarray(raw.T, dtype=np.float32)
-        assert iq_np.shape == (2, self.frame_length), (
-            f"expected (2, {self.frame_length}) after transpose, got {iq_np.shape}"
-        )
-        iq = self._normalize(torch.from_numpy(iq_np))
-        return iq, int(self.class_idx[i]), int(self.snr[i])
+            iq = self.x[i] if self.preload else self._read_one(i)
+            return iq, int(self.class_idx[i]), int(self.snr[i])
 
     def __getstate__(self) -> dict:
         # Never pickle an open HDF5 handle to a worker; each worker reopens its own.
@@ -323,6 +342,7 @@ def build_datasets(
             snr=snr[idx],
             normalization=cfg.normalization,
             frame_length=frame_len,
+            preload=cfg.preload
         )
 
     train_ds, val_ds, test_ds = _make("train"), _make("val"), _make("test")
@@ -368,13 +388,13 @@ def build_dataloaders(
 
     generator = torch.Generator()
     generator.manual_seed(seed)
-
+    workers = 0 if config.data.preload else config.train.num_workers
     common = dict(
         batch_size=config.train.batch_size,
-        num_workers=config.train.num_workers,
-        worker_init_fn=_worker_init_fn if config.train.num_workers > 0 else None,
+        num_workers=workers,
+        worker_init_fn=_worker_init_fn if workers > 0 else None,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=config.train.num_workers > 0,
+        persistent_workers=workers > 0,
     )
 
     train_loader = DataLoader(train_ds, shuffle=True, drop_last=True, generator=generator, **common)

@@ -30,10 +30,11 @@ _VALID = {
         "split": [0.7, 0.15, 0.15],
         "split_seed": 5678,
         "normalization": "unit_power",
+        "preload": False,
     },
     "model": {"dropout_p": 0.5, "init_scheme": "kaiming_linear"},
     "train": {
-        "seed": 0,
+        "seeds": [0],
         "batch_size": 16,
         "num_workers": 0,
         "optimizer": {"name": "adam", "kwargs": {}},
@@ -85,6 +86,10 @@ _BAD_CASES = {
     "missing_amp_enabled": lambda c: c["train"].pop("amp_enabled"),
     "missing_learning_rate": lambda c: c["train"].pop("learning_rate"),
     "amp_enabled_not_bool": lambda c: c["train"].__setitem__("amp_enabled", 1),
+    "missing_preload": lambda c: c["data"].pop("preload"),
+    "preload_not_bool": lambda c: c["data"].__setitem__("preload", 1),
+    # A truthiness check would accept this and silently preload the whole subset into RAM.
+    "preload_string_false": lambda c: c["data"].__setitem__("preload", "false"),
     "learning_rate_zero": lambda c: c["train"].__setitem__("learning_rate", 0),
     "weight_decay_negative": lambda c: c["train"].__setitem__("weight_decay", -1),
     "max_epochs_zero": lambda c: c["train"].__setitem__("max_epochs", 0),

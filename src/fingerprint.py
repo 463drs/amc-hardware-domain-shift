@@ -37,18 +37,24 @@ def _config_fingerprint(config: "Config") -> dict:
     """Normalized, machine-independent view of a Config, for storing in checkpoints.
 
     Runs move between Kaggle, a rented Vast.ai box and a local machine, so a naive
-    dataclasses.asdict() comparison would report false drift. Two normalizations:
+    dataclasses.asdict() comparison would report false drift. Three normalizations:
       * source_path is dropped entirely (machine-specific provenance; already compare=False).
       * data.path is reduced to its basename -- config.py anchors it to an absolute repo-root
         path, so the absolute form differs per machine while the dataset is identical.
+      * data.preload is dropped: it selects HOW frames are read (all into RAM vs one at a
+        time), not WHICH frames or their values -- the two paths are asserted equal in
+        tests/test_data.py. It is a per-machine memory decision, so a resume on a smaller box
+        must be able to flip it without being rejected as config drift.
     Everything else is left intact. The same helper builds both the stored and the current
     value, so the two are always constructed identically.
     """
     fingerprint = dataclasses.asdict(config)
     fingerprint.pop("source_path", None)
     data = fingerprint.get("data")
-    if isinstance(data, dict) and "path" in data:
-        data["path"] = Path(data["path"]).name
+    if isinstance(data, dict):
+        if "path" in data:
+            data["path"] = Path(data["path"]).name
+        data.pop("preload", None)
     return fingerprint
 
 
