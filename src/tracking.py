@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import torch
+import torch.version
 
 from src.logging_utils import get_logger
 
