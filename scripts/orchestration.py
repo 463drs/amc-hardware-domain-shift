@@ -15,6 +15,7 @@ import subprocess
 import os
 import threading
 import time
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -60,11 +61,14 @@ if __name__ == "__main__":
     num_workers = max(1, num_gpus)
     task_queue = queue.Queue()
 
-    start_time = time.time()
+    start_time_sec = time.time()
+    start_time = datetime.now().strftime("%Y%m%d_%H%M")
+    
     send_telegram_notification(bot_token, chat_id, text=f"Starting training: \nconfig: {args.config}")
     
     for seed in seeds:
-        task_queue.put(seed)
+        run_id = f"{config.experiment.condition}_{seed}_{start_time}"
+        task_queue.put((seed, run_id))
 
     def worker(gpu_id: int):
         env = os.environ.copy()
@@ -73,7 +77,7 @@ if __name__ == "__main__":
 
         while not task_queue.empty():
             try:
-                seed = task_queue.get_nowait()
+                seed, run_id = task_queue.get_nowait()
             except queue.Empty:
                 break
 
@@ -83,7 +87,8 @@ if __name__ == "__main__":
                 "-u",
                 "scripts/train.py",
                 "--config", args.config,
-                "--seed", str(seed)
+                "--seed", str(seed),
+                "--run_id", run_id
             ]
             if args.fresh:
                 cmd.append("--fresh")
@@ -106,7 +111,7 @@ if __name__ == "__main__":
 
     for t in threads:
         t.join()
-    elapsed_sec = int(time.time() - start_time)
+    elapsed_sec = int(time.time() - start_time_sec)
     hours, remainder = divmod(elapsed_sec, 3600)
     minutes, seconds = divmod(remainder, 60)
     formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"

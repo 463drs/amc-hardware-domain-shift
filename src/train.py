@@ -24,7 +24,6 @@ configurable, so a config reproduces the same experiment on any machine.
 
 Run:  python scripts/train.py --config configs/baseline.yaml
 """
-
 from __future__ import annotations
 
 import dataclasses
@@ -167,7 +166,6 @@ def train_one_epoch(
     in-the-moment display only; the per-epoch summary is logged by fit(), not here.
     """
     model.train()
-    use_amp = scaler is not None and scaler.is_enabled()
     running_loss, correct, total = 0.0, 0, 0
 
     for iq, labels, _snr in tqdm(loader, desc="train", leave=False,
@@ -176,11 +174,11 @@ def train_one_epoch(
         labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, enabled=use_amp):
+        with torch.autocast(device_type=device.type, enabled=scaler is not None and scaler.is_enabled()):
             logits = model(iq)
-            loss = criterion(logits, labels)
+            loss: torch.Tensor = criterion(logits, labels)
 
-        if use_amp:
+        if scaler is not None and scaler.is_enabled():
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -321,7 +319,7 @@ def fit(
                              progress=progress)
         va = validate(model, val_loader, criterion, device, progress=progress)
         monitored = va[metric_key]
-
+        assert isinstance(monitored, float)
         # ReduceLROnPlateau needs the monitored metric; step-based schedulers do not.
         if plateau:
             scheduler.step(monitored)
@@ -334,7 +332,6 @@ def fit(
             epoch, max_epochs, tr["loss"], tr["accuracy"],
             va["loss"], va["accuracy"], va["accuracy_snr_geq_0db"], lr,
         )
-        
         improved = _is_improvement(monitored, best_metric, mode)
 
         if on_epoch_end is not None:
@@ -451,6 +448,7 @@ def _make_wandb_epoch_callback(run, best_ckpt: Path, run_id: str):
         # the aggregate train/val scalars.
         is_best = metrics.get("is_best", False)
         snr_accuracy = metrics.get("val/snr_accuracy") or {}
+        assert isinstance(snr_accuracy, dict)
         payload = {
             k: v for k, v in metrics.items() 
             if k not in ("val/snr_accuracy", "is_best")
@@ -470,9 +468,10 @@ def _make_wandb_epoch_callback(run, best_ckpt: Path, run_id: str):
 
 def train(
     config_path: str,
-    seed: int, 
+    seed: int,
     resume: "str | bool | None" = None,
     fresh: bool = False,
+    run_id: str | None = None
 ) -> dict:
     """Train a model end-to-end from a config; return the fit() summary plus run metadata.
 
@@ -488,12 +487,14 @@ def train(
     config = Config.from_yaml(resolve_config_path(config_path))
     tcfg = config.train
     exp = config.experiment
-    seed = int(seed)
+    seed = seed
 
     # Run identity is a deterministic function of condition + training seed (NOT the config
     # filename, NOT a timestamp), so a restarted session reuses the same W&B run and the same
     # local checkpoint directory. `run_id` (CLI) overrides only the human-readable name.
-    if fresh:
+    if run_id is not None:
+        run_name = run_id
+    elif fresh:
         ts = datetime.now().strftime("%Y%m%d_%H%M")
         run_name = f"{exp.condition}_{seed}_{ts}"
     else:
