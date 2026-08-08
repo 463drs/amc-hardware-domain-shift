@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
-
+pyrefly.toml
 # jupyter
 .ipynb_checkpoints/
 
