@@ -42,6 +42,7 @@ _VALID = {
         "weight_decay": 0.0,
         "lr_scheduler": {"name": "reduce_on_plateau", "kwargs": {"mode": "min"}},
         "max_epochs": 3,
+        "early_stopping_enabled": True,
         "early_stopping_patience": 2,
         "early_stopping_metric": "val_loss",
         "amp_enabled": False,
@@ -95,6 +96,17 @@ _BAD_CASES = {
     "max_epochs_zero": lambda c: c["train"].__setitem__("max_epochs", 0),
     "patience_zero": lambda c: c["train"].__setitem__("early_stopping_patience", 0),
     "unknown_metric": lambda c: c["train"].__setitem__("early_stopping_metric", "val_f1"),
+    # `seeds: {0, 1}` is YAML set syntax -> a mapping, not a list of seeds.
+    "seeds_as_yaml_set": lambda c: c["train"].__setitem__("seeds", {0: None, 1: None}),
+    "seeds_empty": lambda c: c["train"].__setitem__("seeds", []),
+    "seeds_duplicated": lambda c: c["train"].__setitem__("seeds", [0, 1, 0]),
+    "seeds_not_int": lambda c: c["train"].__setitem__("seeds", [0, "1"]),
+    "seeds_bool": lambda c: c["train"].__setitem__("seeds", [True]),
+    "missing_early_stopping_enabled": lambda c: c["train"].pop("early_stopping_enabled"),
+    "early_stopping_enabled_not_bool": lambda c: c["train"].__setitem__("early_stopping_enabled", 1),
+    # Truthiness would accept this and silently leave early stopping ON.
+    "early_stopping_enabled_string_false": lambda c: c["train"].__setitem__(
+        "early_stopping_enabled", "false"),
     "optimizer_typo_key": lambda c: c["train"]["optimizer"].__setitem__("nmae", "x"),
     "optimizer_bare_string": lambda c: c["train"].__setitem__("optimizer", "adam"),
     "unknown_train_key": lambda c: c["train"].__setitem__("lr", 0.1),

@@ -21,6 +21,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+import scripts.orchestration as orchestration
 import scripts.train as train_cli
 import src.train as train
 from src.checkpointing import load_checkpoint, save_checkpoint, select_resume_checkpoint
@@ -121,6 +122,63 @@ def test_resume_continues_patience_count():
 def test_fit_default_patience_is_zero():
     # Not passing epochs_no_improve preserves the pre-fix behaviour (fresh budget).
     assert _run_until_early_stop(0, patience=2) == 2
+
+
+# early_stopping_enabled is a switch over the STOP condition only: the monitored metric still
+# selects best.pt when it is off. train.early_stopping_metric may name the headline SNR>=0 accuracy.
+
+def _run_fit(**overrides):
+    """fit() over a frozen tiny model; `overrides` replace individual loop settings."""
+    torch.manual_seed(0)
+    model, opt, sched = _tiny_setup()
+    loader = _tiny_loader()
+    settings = dict(
+        max_epochs=6, early_stopping_patience=2, early_stopping_metric="val_loss",
+        best_metric=-1.0,   # a positive val loss can never beat this, so nothing ever improves
+        progress=False,
+    )
+    settings.update(overrides)
+    return train.fit(model, loader, loader, opt, sched, nn.CrossEntropyLoss(), CPU, **settings)
+
+
+def test_early_stopping_disabled_trains_the_full_budget():
+    # Same never-improving setup either way; only the switch differs.
+    assert _run_fit(early_stopping_enabled=True)["epochs_run"] == 2      # halts on patience
+    assert _run_fit(early_stopping_enabled=False)["epochs_run"] == 6     # runs to max_epochs
+
+
+def test_fit_defaults_to_early_stopping_enabled():
+    # Callers that predate the switch (and every existing test) keep the old behaviour.
+    assert _run_fit()["epochs_run"] == 2
+
+
+def test_best_checkpoint_still_tracked_with_early_stopping_disabled(tmp_path):
+    best = tmp_path / "best.pt"
+    summary = _run_fit(early_stopping_enabled=False, best_metric=None,
+                       checkpoint_path=best, max_epochs=3)
+    assert summary["epochs_run"] == 3
+    assert best.exists(), "turning early stopping off must not stop best.pt being written"
+    assert torch.load(best, weights_only=False)["epoch"] == summary["best_epoch"]
+
+
+def test_monitored_metric_can_be_snr_geq_0_accuracy():
+    summary = _run_fit(early_stopping_metric="val_accuracy_snr_geq_0db",
+                       best_metric=None, early_stopping_enabled=False, max_epochs=2)
+    assert summary["best_metric_name"] == "val_accuracy_snr_geq_0db"
+    # An accuracy is a fraction; cross-entropy over 3 classes is ~1.1. This pins that the loop
+    # tracked the accuracy key rather than the loss key.
+    assert 0.0 <= summary["best_metric"] <= 1.0
+
+
+def test_nan_monitored_metric_fails_loudly():
+    """No frame at SNR >= 0 makes the metric NaN, which would silently never 'improve'."""
+    torch.manual_seed(0)
+    model, opt, sched = _tiny_setup()
+    loader = _tiny_loader(snr_value=-10)
+    with pytest.raises(RuntimeError, match="NaN"):
+        train.fit(model, loader, loader, opt, sched, nn.CrossEntropyLoss(), CPU,
+                  max_epochs=2, early_stopping_patience=2,
+                  early_stopping_metric="val_accuracy_snr_geq_0db", progress=False)
 
 
 # Periodic last.pt: written every epoch, unlike best.pt which only lands on improvement.
@@ -231,6 +289,9 @@ def _stub_train(tmp_path, monkeypatch):
     monkeypatch.setattr(train, "configure_logging", lambda **kw: None)
     monkeypatch.setattr(train, "build_dataloaders",
                         lambda cfg, seed: (_tiny_loader(), _tiny_loader(), _tiny_loader()))
+    # Fake loaders are plain lists, so the real subset builder (which needs .dataset) cannot run.
+    monkeypatch.setattr(train, "build_train_eval_loader",
+                        lambda cfg, train_loader, val_loader: _tiny_loader())
     monkeypatch.setattr(train, "build_model", lambda mcfg, n_classes: nn.Linear(4, n_classes))
     monkeypatch.setattr(train, "set_seed", lambda s: seed_calls.append(s))
 
@@ -331,6 +392,78 @@ def test_main_fresh_discards_existing_checkpoint(tmp_path, monkeypatch):
     assert torch.backends.cudnn.deterministic is True
 
 
+# Train metrics: the in-loop running average is labelled as such, and a train_eval_loader gives
+# a val-comparable train/*.
+
+def test_train_one_epoch_returns_running_keys():
+    """Naming is the point: these are not comparable to val/*, so they must not be train/loss."""
+    torch.manual_seed(0)
+    model, opt, _ = _tiny_setup(lr=0.1)
+    out = train.train_one_epoch(model, _tiny_loader(), opt, nn.CrossEntropyLoss(), CPU,
+                                progress=False)
+    assert set(out) == {"running_loss", "running_accuracy"}
+
+
+def test_train_eval_loader_produces_val_comparable_metrics():
+    captured = {}
+    torch.manual_seed(0)
+    model, opt, sched = _tiny_setup()
+    loader = _tiny_loader()
+    train.fit(model, loader, loader, opt, sched, nn.CrossEntropyLoss(), CPU,
+              train_eval_loader=loader, max_epochs=1, early_stopping_patience=2,
+              early_stopping_metric="val_loss", progress=False,
+              on_epoch_end=lambda e, m: captured.update(m))
+
+    # Running trace and the eval-mode measurement are reported side by side, not conflated.
+    assert "train/running_loss" in captured and "train/running_accuracy" in captured
+    assert "train/loss" in captured and "train/accuracy" in captured
+    assert "train/accuracy_snr_geq_0db" in captured
+    # Same loader for train-eval and val, so the gap is exactly zero -- proving both sides are
+    # measured the same way (eval mode, one weight state).
+    assert captured["train/accuracy"] == captured["val/accuracy"]
+    assert captured["gap/accuracy_snr_geq_0db"] == pytest.approx(0.0)
+
+
+def test_without_train_eval_loader_only_running_metrics_are_reported():
+    captured = {}
+    torch.manual_seed(0)
+    model, opt, sched = _tiny_setup()
+    loader = _tiny_loader()
+    train.fit(model, loader, loader, opt, sched, nn.CrossEntropyLoss(), CPU,
+              max_epochs=1, early_stopping_patience=2, early_stopping_metric="val_loss",
+              progress=False, on_epoch_end=lambda e, m: captured.update(m))
+    assert "train/running_loss" in captured
+    assert "train/loss" not in captured and "gap/accuracy_snr_geq_0db" not in captured
+
+
+# Run identity: the seed must be one the config prescribes, and both it and the condition must
+# reach the W&B config as first-class keys (nothing downstream may parse run_name).
+
+def test_seed_outside_config_seeds_is_refused(tmp_path, monkeypatch):
+    _stub_train(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="not in train.seeds"):
+        train.train("debug", seed=99)
+
+
+def test_condition_and_seed_are_logged_as_top_level_config(tmp_path, monkeypatch):
+    _stub_train(tmp_path, monkeypatch)
+    captured = {}
+
+    def _fake_init_wandb(experiment, run_name, wandb_id, config_dict, allow_val_change=False):
+        captured.update(config_dict)
+        return None
+
+    monkeypatch.setattr(train, "_init_wandb", _fake_init_wandb)
+    train.train("debug", seed=SEED)
+
+    assert captured["condition"] == "debug"
+    assert captured["seed"] == SEED
+    assert captured["run_name"] == RUN_NAME
+    # The full config is still logged alongside the resolved identity.
+    assert captured["data"]["subset_seed"] == 1234
+    assert SEED in captured["train"]["seeds"]
+
+
 def test_cli_resume_and_fresh_are_mutually_exclusive():
     parser = train_cli.build_parser()
     base = ["--config", "debug", "--seed", "0"]
@@ -341,6 +474,35 @@ def test_cli_resume_and_fresh_are_mutually_exclusive():
     assert parser.parse_args(base + ["--resume"]).resume is True
     assert parser.parse_args(base + ["--resume", "x.pt"]).resume == "x.pt"
     assert parser.parse_args(base + ["--fresh"]).fresh is True
+
+
+def test_cli_seed_is_parsed_as_int():
+    """A str seed reaches np.random.seed() and kills the run before the first batch."""
+    args = train_cli.build_parser().parse_args(["--config", "debug", "--seed", "10"])
+    assert args.seed == 10 and isinstance(args.seed, int)
+    # Seeding with exactly what the CLI produced must not raise.
+    set_seed(args.seed)
+
+
+def test_cli_accepts_both_run_id_spellings():
+    """scripts/orchestration.py passes --run_id; --run-id is the conventional form."""
+    parser = train_cli.build_parser()
+    base = ["--config", "debug", "--seed", "0"]
+    assert parser.parse_args(base).run_id is None
+    assert parser.parse_args(base + ["--run_id", "x"]).run_id == "x"
+    assert parser.parse_args(base + ["--run-id", "x"]).run_id == "x"
+
+
+def test_orchestration_forwards_intent_flags():
+    """The orchestrator's flags must survive into each subprocess, not be silently dropped."""
+    parser = orchestration.build_parser()
+    assert parser.parse_args(["--config", "debug"]).resume is None
+    assert parser.parse_args(["--config", "debug", "--resume"]).resume is True
+    assert parser.parse_args(["--config", "debug", "--fresh"]).fresh is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--config", "debug", "--resume", "--fresh"])
+    with pytest.raises(SystemExit):   # --config was optional, and Path(None) died obscurely
+        parser.parse_args([])
 
 
 def test_cli_help_runs_from_a_clean_interpreter():
@@ -455,7 +617,7 @@ def _tcfg(sched_kwargs, metric="val_loss"):
         optimizer={"name": "adam", "kwargs": {}},
         learning_rate=1e-3, weight_decay=0.0,
         lr_scheduler={"name": "reduce_on_plateau", "kwargs": sched_kwargs},
-        max_epochs=5, early_stopping_patience=3,
+        max_epochs=5, early_stopping_enabled=True, early_stopping_patience=3,
         early_stopping_metric=metric, amp_enabled=False,
     )
 
@@ -482,6 +644,16 @@ def test_build_scheduler_fills_missing_mode_without_warning(caplog):
     with caplog.at_level(logging.WARNING):
         sched = train.build_scheduler(_optimizer(), cfg)
     assert sched.mode == "max"
+
+
+def test_build_scheduler_mode_for_snr_geq_0_accuracy(caplog):
+    # The plateau scheduler is stepped with the monitored metric, so a max-direction metric must
+    # give mode="max" -- otherwise it would cut the LR while accuracy was still rising.
+    cfg = _tcfg({"factor": 0.5}, metric="val_accuracy_snr_geq_0db")
+    with caplog.at_level(logging.WARNING):
+        sched = train.build_scheduler(_optimizer(), cfg)
+    assert sched.mode == "max"
+    assert not _warnings(caplog)
     assert not _warnings(caplog)  # merely omitting mode is not a conflict
 
 
