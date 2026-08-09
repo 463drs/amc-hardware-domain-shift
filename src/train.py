@@ -334,15 +334,6 @@ def fit(
         )
         improved = _is_improvement(monitored, best_metric, mode)
 
-        if on_epoch_end is not None:
-            on_epoch_end(epoch, {
-                "train/loss": tr["loss"], "train/accuracy": tr["accuracy"],
-                "val/loss": va["loss"], "val/accuracy": va["accuracy"],
-                "val/accuracy_snr_geq_0db": va["accuracy_snr_geq_0db"],
-                "val/snr_accuracy": va["snr_accuracy"],   # {bin: acc}; main formats for W&B
-                "lr": lr, "is_best":improved
-            })
-
         if improved:
             best_metric = monitored
             best_epoch = epoch
@@ -358,10 +349,16 @@ def fit(
         else:
             epochs_no_improve += 1
 
-        # Periodic checkpoint: written EVERY epoch regardless of improvement, after the counters
-        # above are updated, so a session death mid-patience-window resumes from here rather
-        # than replaying every epoch since the last improvement. Saved before the early-stop
-        # break so the final epoch is captured too.
+        if on_epoch_end is not None:
+            on_epoch_end(epoch, {
+                "train/loss": tr["loss"], "train/accuracy": tr["accuracy"],
+                "val/loss": va["loss"], "val/accuracy": va["accuracy"],
+                "val/accuracy_snr_geq_0db": va["accuracy_snr_geq_0db"],
+                "val/snr_accuracy": va["snr_accuracy"],   # {bin: acc}; main formats for W&B
+                "lr": lr, "is_best":improved
+            })
+
+
         if last_checkpoint_path is not None:
             save_checkpoint(last_checkpoint_path, model=model, optimizer=optimizer,
                              scheduler=scheduler, scaler=scaler, epoch=epoch,
