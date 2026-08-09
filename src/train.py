@@ -47,7 +47,7 @@ from src.config import (
     set_cudnn_determinism,
     set_seed,
 )
-from src.data import MODULATION_CLASSES, build_dataloaders
+from src.data import MODULATION_CLASSES, build_dataloaders, build_train_eval_loader
 from src.fingerprint import _config_fingerprint, _fingerprint_diff, _format_fingerprint_diff
 from src.logging_utils import configure_logging, get_logger
 from src.metrics import snr_bucket
@@ -75,9 +75,19 @@ SCHEDULERS: Dict[str, Callable[..., object]] = {
     "cosine": torch.optim.lr_scheduler.CosineAnnealingLR,
 }
 
-# early_stopping_metric -> (key in the validate() dict, optimization direction).
-_VAL_METRIC_KEY = {"val_loss": "loss", "val_accuracy": "accuracy"}
-_METRIC_MODE = {"val_loss": "min", "val_accuracy": "max"}
+# early_stopping_metric -> (key in the validate() dict, optimization direction). The metric named
+# here selects best.pt whether or not early stopping is enabled, so the two tables must cover every
+# name config._EARLY_STOPPING_METRICS accepts.
+_VAL_METRIC_KEY = {
+    "val_loss": "loss",
+    "val_accuracy": "accuracy",
+    "val_accuracy_snr_geq_0db": "accuracy_snr_geq_0db",
+}
+_METRIC_MODE = {
+    "val_loss": "min",
+    "val_accuracy": "max",
+    "val_accuracy_snr_geq_0db": "max",
+}
 
 
 def _progress_disabled(progress: Optional[bool]) -> bool:
@@ -157,7 +167,13 @@ def train_one_epoch(
     scaler: Optional[torch.amp.GradScaler] = None,
     progress: Optional[bool] = None,
 ) -> Dict[str, float]:
-    """Run one training pass; return mean loss and accuracy over the epoch.
+    """Run one training pass; return the RUNNING mean loss and accuracy over the epoch.
+
+    "Running" is the whole caveat: these average predictions made by every weight state the
+    epoch passed through, in train mode with dropout active. They track optimisation progress
+    and nothing else -- they are NOT comparable to the val metrics, which score one set of
+    weights in eval mode. fit() logs a properly measured train/* from a train_eval_loader for
+    that comparison; these go out as train/running_*.
 
     Mixed precision is used only when `scaler` is enabled (see main); on CPU or with AMP
     disabled the autocast context is a no-op, so this one code path covers both.
@@ -191,7 +207,7 @@ def train_one_epoch(
         correct += (logits.argmax(dim=1) == labels).sum().item()
         total += batch
 
-    return {"loss": running_loss / total, "accuracy": correct / total}
+    return {"running_loss": running_loss / total, "running_accuracy": correct / total}
 
 
 @torch.no_grad()
@@ -269,9 +285,11 @@ def fit(
     criterion: nn.Module,
     device: torch.device,
     *,
+    train_eval_loader=None,
     max_epochs: int,
     early_stopping_patience: int,
     early_stopping_metric: str,
+    early_stopping_enabled: bool = True,
     scaler: Optional[torch.amp.GradScaler] = None,
     start_epoch: int = 1,
     best_metric: Optional[float] = None,
@@ -288,6 +306,16 @@ def fit(
     Each epoch: train_one_epoch -> validate -> step the scheduler -> track the monitored
     metric -> checkpoint on improvement -> early-stop after `early_stopping_patience` epochs
     without improvement (`max_epochs` is the hard ceiling regardless).
+
+    `early_stopping_metric` names the metric that is monitored; it selects the best checkpoint
+    ALWAYS. `early_stopping_enabled=False` only removes the stop condition, so the loop runs the
+    full `max_epochs` while still tracking and checkpointing the best epoch -- the patience
+    counter keeps ticking (and is still checkpointed) so a resume that re-enables stopping picks
+    up an accurate count rather than a fresh budget.
+
+    `train_eval_loader` (optional) re-scores held-in training frames in eval mode each epoch, so
+    train/* and val/* are measured identically and their difference is a real generalization gap.
+    Without it only train/running_* is reported, which is not val-comparable.
 
     Kept free of config/logging/tracking/resume concerns so it can be unit-tested directly:
     pass a tiny model and fake loaders, `checkpoint_path=None` to skip disk writes, and
@@ -317,9 +345,23 @@ def fit(
         last_epoch = epoch
         tr = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler,
                              progress=progress)
+        # Re-score held-in training frames the same way val is scored, so train/* vs val/* is a
+        # real generalization gap. Skipped when no loader is given (unit tests, cheap runs).
+        tr_eval = (validate(model, train_eval_loader, criterion, device, progress=progress)
+                   if train_eval_loader is not None else None)
         va = validate(model, val_loader, criterion, device, progress=progress)
         monitored = va[metric_key]
         assert isinstance(monitored, float)
+        # accuracy_snr_geq_0db is NaN when the val split holds no frame at SNR >= 0 (a config
+        # whose snr_max < 0). NaN loses every comparison, so _is_improvement would silently
+        # return False forever: no best.pt would ever be written and, with stopping enabled, the
+        # run would halt on patience having learned nothing. Fail loudly instead.
+        if math.isnan(monitored):
+            raise RuntimeError(
+                f"monitored metric {early_stopping_metric!r} is NaN at epoch {epoch}. "
+                f"accuracy_snr_geq_0db is undefined when the validation split contains no frames "
+                f"at SNR >= 0 dB -- check data.snr_min/data.snr_max, or monitor a different metric."
+            )
         # ReduceLROnPlateau needs the monitored metric; step-based schedulers do not.
         if plateau:
             scheduler.step(monitored)
@@ -327,9 +369,13 @@ def fit(
             scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
 
+        # Prefer the eval-mode train metrics in the summary line; they are the ones comparable
+        # to val. Fall back to the running average when no train_eval_loader was given.
+        tr_shown = tr_eval if tr_eval is not None else {"loss": tr["running_loss"],
+                                                        "accuracy": tr["running_accuracy"]}
         logger.info(
             "epoch %3d/%d | train loss %.4f acc %.4f | val loss %.4f acc %.4f (>=0dB %.4f) | lr %.2e",
-            epoch, max_epochs, tr["loss"], tr["accuracy"],
+            epoch, max_epochs, tr_shown["loss"], tr_shown["accuracy"],
             va["loss"], va["accuracy"], va["accuracy_snr_geq_0db"], lr,
         )
         improved = _is_improvement(monitored, best_metric, mode)
@@ -350,13 +396,26 @@ def fit(
             epochs_no_improve += 1
 
         if on_epoch_end is not None:
-            on_epoch_end(epoch, {
-                "train/loss": tr["loss"], "train/accuracy": tr["accuracy"],
+            payload = {
+                # In-epoch optimisation trace: many weight states, dropout on. Not val-comparable.
+                "train/running_loss": tr["running_loss"],
+                "train/running_accuracy": tr["running_accuracy"],
                 "val/loss": va["loss"], "val/accuracy": va["accuracy"],
                 "val/accuracy_snr_geq_0db": va["accuracy_snr_geq_0db"],
                 "val/snr_accuracy": va["snr_accuracy"],   # {bin: acc}; main formats for W&B
-                "lr": lr, "is_best":improved
-            })
+                "lr": lr, "is_best": improved,
+            }
+            if tr_eval is not None:
+                # Measured exactly like val/* -- these are the ones to subtract.
+                payload.update({
+                    "train/loss": tr_eval["loss"],
+                    "train/accuracy": tr_eval["accuracy"],
+                    "train/accuracy_snr_geq_0db": tr_eval["accuracy_snr_geq_0db"],
+                    "gap/accuracy_snr_geq_0db":
+                        float(tr_eval["accuracy_snr_geq_0db"])  # type: ignore[arg-type]
+                        - float(va["accuracy_snr_geq_0db"]),    # type: ignore[arg-type]
+                })
+            on_epoch_end(epoch, payload)
 
 
         if last_checkpoint_path is not None:
@@ -366,7 +425,9 @@ def fit(
                              run_id=run_id, config_metadata=checkpoint_metadata)
 
         # Only a non-improving epoch can early-stop; an improvement just reset the counter.
-        if not improved and epochs_no_improve >= early_stopping_patience:
+        # With early_stopping_enabled False the counter still advances (it is checkpointed, so a
+        # resume that re-enables stopping inherits a truthful count) but never ends the run.
+        if early_stopping_enabled and not improved and epochs_no_improve >= early_stopping_patience:
             logger.info("early stopping at epoch %d (no %s improvement for %d epochs)",
                         epoch, early_stopping_metric, early_stopping_patience)
             break
@@ -484,7 +545,13 @@ def train(
     config = Config.from_yaml(resolve_config_path(config_path))
     tcfg = config.train
     exp = config.experiment
-    seed = seed
+
+    # Fail here, not hours later in predict.verify_cells as an "extra" cell.
+    if seed not in tcfg.seeds:
+        raise ValueError(
+            f"seed {seed} is not in train.seeds {tcfg.seeds} of {config.source_path}. "
+            f"Add it to the config (it defines the experiment matrix) or pass one of those."
+        )
 
     # Run identity is a deterministic function of condition + training seed (NOT the config
     # filename, NOT a timestamp), so a restarted session reuses the same W&B run and the same
@@ -520,8 +587,15 @@ def train(
         set_seed(seed)
     device = get_device()
     logger.info("device=%s  amp_enabled=%s", device, tcfg.amp_enabled)
+    logger.info(
+        "monitoring %s (selects best.pt); early stopping %s",
+        tcfg.early_stopping_metric,
+        f"on, patience={tcfg.early_stopping_patience}" if tcfg.early_stopping_enabled
+        else f"OFF -- training the full {tcfg.max_epochs} epochs",
+    )
 
     train_loader, val_loader, _test_loader = build_dataloaders(config, seed)
+    train_eval_loader = build_train_eval_loader(config, train_loader, val_loader)
 
     model = build_model(config.model, n_classes=len(MODULATION_CLASSES)).to(device)
     optimizer = build_optimizer(model, tcfg)
@@ -538,15 +612,25 @@ def train(
         early_stopping_metric=tcfg.early_stopping_metric,
     )
 
-    run = _init_wandb(exp, run_name, wandb_id, dataclasses.asdict(config),
+    # Resolved run identity as first-class config: downstream reads these instead of splitting
+    # run_name on "_" (which breaks on conditions like rtl_sdr_gain0). train.seeds is the whole
+    # matrix; `seed` is the one this run used, which nothing else records.
+    run_config: dict = dataclasses.asdict(config)
+    run_config["condition"] = exp.condition
+    run_config["seed"] = seed
+    run_config["run_name"] = run_name
+
+    run = _init_wandb(exp, run_name, wandb_id, run_config,
                       allow_val_change=config_drift_allowed)
 
     try:
         summary = fit(
             model, train_loader, val_loader, optimizer, scheduler, criterion, device,
+            train_eval_loader=train_eval_loader,
             max_epochs=tcfg.max_epochs,
             early_stopping_patience=tcfg.early_stopping_patience,
             early_stopping_metric=tcfg.early_stopping_metric,
+            early_stopping_enabled=tcfg.early_stopping_enabled,
             scaler=scaler,
             start_epoch=start_epoch,
             best_metric=best_metric,

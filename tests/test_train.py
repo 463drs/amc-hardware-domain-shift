@@ -14,6 +14,7 @@ import os
 import random
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,9 @@ import torch.nn as nn
 
 import scripts.orchestration as orchestration
 import scripts.train as train_cli
+import src.telegram_notification as telegram_notification
 import src.train as train
+from src.telegram_notification import send_telegram_notification
 from src.checkpointing import load_checkpoint, save_checkpoint, select_resume_checkpoint
 from src.config import (
     Config,
@@ -474,6 +477,42 @@ def test_cli_resume_and_fresh_are_mutually_exclusive():
     assert parser.parse_args(base + ["--resume"]).resume is True
     assert parser.parse_args(base + ["--resume", "x.pt"]).resume == "x.pt"
     assert parser.parse_args(base + ["--fresh"]).fresh is True
+
+
+def test_completion_notification_text_reports_the_result():
+    summary = {"run_name": "baseline_10", "best_metric_name": "val_accuracy_snr_geq_0db",
+               "best_metric": 0.78912, "best_epoch": 87, "epochs_run": 150}
+    text = train_cli._completion_text(summary, "baseline", elapsed=7391.0)
+    assert "baseline_10" in text
+    assert "val_accuracy_snr_geq_0db: 0.7891" in text
+    assert "epoch 87 of 150 run" in text
+    assert "02:03:11" in text
+
+
+def test_notification_is_a_noop_without_credentials():
+    """No token/chat -> silence, so tests and credential-less machines never attempt a send."""
+    send_telegram_notification(None, None, text="x")
+    send_telegram_notification("", "", text="x")
+
+
+class _NullContext:
+    """Stand-in for urlopen's context manager; captures nothing itself."""
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def test_notification_text_is_html_escaped(monkeypatch):
+    """parse_mode is HTML; an unescaped '<' from an exception repr would be rejected outright."""
+    sent = {}
+
+    def _fake_urlopen(req, timeout=5):
+        sent["body"] = req.data
+        return _NullContext()
+
+    monkeypatch.setattr(telegram_notification.urllib.request, "urlopen", _fake_urlopen)
+    send_telegram_notification("tok", "chat", text="failed: <class 'ValueError'> & more")
+    body = urllib.parse.unquote_plus(sent["body"].decode())
+    assert "&lt;class" in body and "&amp; more" in body
 
 
 def test_cli_seed_is_parsed_as_int():
