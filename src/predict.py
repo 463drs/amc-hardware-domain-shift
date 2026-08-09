@@ -19,8 +19,33 @@ from src.config import Config, resolve_config_path
 from src.data import build_dataloaders, MODULATION_CLASSES
 from src.models import build_model
 
-_SPLIT_KEYS = ("path", "subset_seed", "split_seed", "frames_per_pair",
-               "snr_min", "snr_max", "split")
+# Every DataConfig field whose change makes an offline number incomparable to the training run --
+# either by moving WHICH frames land in the test split, or by changing their VALUES. `preload` is
+# deliberately excluded (as in src.fingerprint): it selects HOW frames are read, all-into-RAM vs
+# one-at-a-time, never which frames or what they contain.
+_VERIFIED_DATA_KEYS = ("path", "subset_seed", "split_seed", "frames_per_pair",
+                       "snr_min", "snr_max", "split", "normalization")
+
+
+def _normalize_data_value(key: str, value: object) -> object:
+    """Canonical form of one data-config value, so equal experiments compare equal.
+
+    Each normalization removes a FALSE alarm; none of them can hide a real difference:
+      * path      -> basename. config.py anchors it to an absolute repo-root path, so a run
+                     trained on Kaggle and evaluated locally differs only in the prefix.
+      * sequences -> tuple of floats. `split` is a tuple on the live Config and a JSON list once
+                     it has been through W&B; str() of those two never matches.
+      * numbers   -> float, so 30 and 30.0 do not read as a config change.
+    """
+    if key == "path":
+        return str(value).replace("\\", "/").rsplit("/", 1)[-1]
+    if isinstance(value, (list, tuple)):
+        return tuple(float(x) for x in value)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    return str(value)
 
 @dataclass(frozen=True, order=True)
 class Cell:
@@ -45,23 +70,33 @@ def expected_cells(cfg: Config) -> Set[Cell]:
     }
 
 
+def _cell_from_meta(meta: dict, meta_path: Path) -> Cell:
+    """Run identity from the logged config, never from splitting run_name on '_'.
+
+    A condition containing an underscore (rtl_sdr_gain0) makes name-splitting yield
+    condition "rtl" and seed "sdr"; src.train logs both as top-level config keys instead.
+    """
+    cfg = meta.get("config")
+    if not isinstance(cfg, dict) or "condition" not in cfg or "seed" not in cfg:
+        raise RuntimeError(
+            f"{meta_path}: logged config has no top-level 'condition'/'seed', so this run's "
+            f"identity cannot be read. It predates src.train recording them; re-download the "
+            f"metadata (src.load_best_models) or retrain the cell."
+        )
+    return Cell(condition=str(cfg["condition"]), seed=int(cfg["seed"]))
+
+
 def discover_cells(root: Path, condition: str | None = None) -> List[CellDir]:
     """
     Scan the download root for cells, reading each meta.json.
     If condition is given - search only for the said condition.
     """
     found: List[CellDir] = []
-    search_area = "*/*/meta.json" if condition is None else f"{condition}/*/meta.json" 
+    search_area = "*/*/meta.json" if condition is None else f"{condition}/*/meta.json"
     for meta_path in sorted(root.glob(search_area)):
         meta = json.loads(meta_path.read_text())
-        name_split = meta["run_name"].split("_")
-
         found.append(
-            CellDir(
-                cell=Cell(condition=name_split[0], seed=int(name_split[1])),
-                path=meta_path.parent,
-                meta=meta,
-            )
+            CellDir(cell=_cell_from_meta(meta, meta_path), path=meta_path.parent, meta=meta)
         )
     if not found:
         raise FileNotFoundError(f"no cells under {root} matching {search_area!r}")
@@ -105,17 +140,39 @@ def predict(
     )
 
 def verify_split(cfg: Config, found: List[CellDir]) -> None:
-    """Evaluating on a split that differs from the training one silently inflates accuracy."""
-    current = {k: getattr(cfg.data, k) for k in _SPLIT_KEYS}
+    """Refuse to evaluate a checkpoint whose training data config differs from this one."""
+    current = {k: _normalize_data_value(k, getattr(cfg.data, k)) for k in _VERIFIED_DATA_KEYS}
+
     for c in found:
-        train_cfg = c.meta["config"]
-        for k, v in current.items():
-            got = train_cfg.get(k)
-            if got is not None and str(got) != str(v):
-                raise RuntimeError(
-                    f"{c.cell}: split parameter {k!r} differs: trained with {got!r}, "
-                    f"evaluating with {v!r}"
-                )
+        stored = c.meta.get("config")
+        trained = stored.get("data") if isinstance(stored, dict) else None
+        if not isinstance(trained, dict):
+            raise RuntimeError(
+                f"{c.cell}: {c.path / 'meta.json'} carries no 'config.data' section, so the "
+                f"training split cannot be verified against the evaluation config. Re-download "
+                f"the run metadata (src.load_best_models) or remove the cell."
+            )
+
+        missing = [k for k in _VERIFIED_DATA_KEYS if k not in trained]
+        if missing:
+            raise RuntimeError(
+                f"{c.cell}: stored data config is missing {missing}, so the training split "
+                f"cannot be verified. Re-download the run metadata or remove the cell."
+            )
+
+        # Report every difference at once: fixing them one exception at a time is needless work.
+        diffs = [
+            (k, trained[k], getattr(cfg.data, k))
+            for k in _VERIFIED_DATA_KEYS
+            if _normalize_data_value(k, trained[k]) != current[k]
+        ]
+        if diffs:
+            detail = "\n".join(f"  {k}: trained with {old!r}, evaluating with {new!r}"
+                               for k, old, new in diffs)
+            raise RuntimeError(
+                f"{c.cell}: data config differs from the training run in {len(diffs)} key(s), so "
+                f"the test split is not the one this model was held out from:\n{detail}"
+            )
 
 def save_predictions(
     dest: Path, pred: np.ndarray, true: np.ndarray, snr: np.ndarray, meta: dict
