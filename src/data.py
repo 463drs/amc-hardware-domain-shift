@@ -29,8 +29,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .config import Config, DataConfig
-from .logging_utils import get_logger
+from src.config import Config, DataConfig
+from src.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -199,8 +199,8 @@ def stratified_split(
         rng = np.random.default_rng([split_seed, int(c), snr_seed])
         shuffled = positions[rng.permutation(positions.size)]
         m = positions.size
-        n_train = int(round(split[0] * m))
-        n_val = int(round(split[1] * m))
+        n_train = round(split[0] * m)
+        n_val = round(split[1] * m)
         # Clamp so counts never exceed the cell (rounding can overshoot on tiny cells).
         n_train = min(n_train, m)
         n_val = min(n_val, m - n_train)
@@ -248,7 +248,7 @@ class RadioMLDataset(Dataset):
         self.class_idx = np.asarray(class_idx, dtype=np.int64)
         self.snr = np.asarray(snr, dtype=np.int64)
         self.normalization = normalization
-        self.frame_length = int(frame_length)
+        self.frame_length = frame_length
         self.preload = preload
         self._normalize = _get_normalizer(normalization)  # validates the name early
         self._file: Optional[h5py.File] = None
@@ -278,9 +278,9 @@ class RadioMLDataset(Dataset):
             self._file = h5py.File(self.path, "r")
         return self._file
 
-    def __getitem__(self, i: int) -> Tuple[torch.Tensor, int, int]:
-            iq = self.x[i] if self.preload else self._read_one(i)
-            return iq, int(self.class_idx[i]), int(self.snr[i])
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, int]:
+        iq = self.x[index] if self.preload else self._read_one(index)
+        return iq, int(self.class_idx[index]), int(self.snr[index])
 
     def __getstate__(self) -> dict:
         # Never pickle an open HDF5 handle to a worker; each worker reopens its own.

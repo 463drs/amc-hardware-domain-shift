@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-from .config import ModelConfig
+from src.config import ModelConfig
 
 # Weight-init registry (named + config-selectable; mirrors data.NORMALIZERS)
 
@@ -157,7 +157,7 @@ class RadioMLResNet(nn.Module):
         return self.fc3(out)
 
 
-def build_model(model_cfg: ModelConfig, n_classes: int) -> nn.Module:
+def build_model(model_cfg: ModelConfig, n_classes: int = 24) -> nn.Module:
     """Construct the fixed experiment architecture from a validated ModelConfig.
 
     The architecture is not a variable under study (README), so this hard-wires
