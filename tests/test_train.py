@@ -650,12 +650,12 @@ def test_checkpoint_roundtrip_restores_scaler(tmp_path):
 
 # Issue 4: build_scheduler derives ReduceLROnPlateau mode from early_stopping_metric.
 
-def _tcfg(sched_kwargs, metric="val_loss"):
+def _tcfg(sched_kwargs, metric="val_loss", sched_name="reduce_on_plateau"):
     return TrainConfig(
         seeds=[0], batch_size=4, num_workers=0,
         optimizer={"name": "adam", "kwargs": {}},
         learning_rate=1e-3, weight_decay=0.0,
-        lr_scheduler={"name": "reduce_on_plateau", "kwargs": sched_kwargs},
+        lr_scheduler={"name": sched_name, "kwargs": sched_kwargs},
         max_epochs=5, early_stopping_enabled=True, early_stopping_patience=3,
         early_stopping_metric=metric, amp_enabled=False,
     )
@@ -702,6 +702,37 @@ def test_build_scheduler_agreeing_mode_no_warning(caplog):
         sched = train.build_scheduler(_optimizer(), cfg)
     assert sched.mode == "min"
     assert not _warnings(caplog)
+
+
+def test_build_scheduler_none_holds_lr_constant():
+    opt = _optimizer()
+    sched = train.build_scheduler(opt, _tcfg({}, sched_name="none"))
+    for _ in range(5):
+        sched.step()
+    assert opt.param_groups[0]["lr"] == pytest.approx(1e-3)
+
+
+def test_build_scheduler_none_rejects_kwargs():
+    # Silently ignoring them would hide a config that looks like it schedules but does not.
+    with pytest.raises(ValueError, match="takes no kwargs"):
+        train.build_scheduler(_optimizer(), _tcfg({"factor": 0.5}, sched_name="none"))
+
+
+def test_build_scheduler_none_survives_checkpoint_roundtrip(tmp_path):
+    model = nn.Linear(4, 3)
+    opt = torch.optim.SGD(model.parameters(), lr=0.1)
+    sched = train.build_scheduler(opt, _tcfg({}, sched_name="none"))
+    sched.step()
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=None,
+                    epoch=1, best_metric=0.1, epochs_no_improve=0, run_id="r")
+
+    fresh_opt = torch.optim.SGD(nn.Linear(4, 3).parameters(), lr=0.1)
+    fresh = train.build_scheduler(fresh_opt, _tcfg({}, sched_name="none"))
+    load_checkpoint(ckpt, model=nn.Linear(4, 3), optimizer=fresh_opt, scheduler=fresh,
+                    scaler=None, device=CPU)
+    assert fresh.last_epoch == sched.last_epoch
+    assert fresh_opt.param_groups[0]["lr"] == pytest.approx(0.1)
 
 
 # Issue 5: per-SNR validation metrics.

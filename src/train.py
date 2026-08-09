@@ -31,7 +31,7 @@ import math
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -69,10 +69,18 @@ OPTIMIZERS: Dict[str, Callable[..., torch.optim.Optimizer]] = {
     "sgd": torch.optim.SGD,
 }
 
-SCHEDULERS: Dict[str, Callable[..., object]] = {
+def _constant_lr(optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler.LambdaLR:
+    """The "no schedule" choice: always multiplies the base LR by 1.0. An identity scheduler
+    instead of None keeps .step()/.state_dict() valid, so no caller needs a None branch.
+    """
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _epoch: 1.0)
+
+
+SCHEDULERS: Dict[str, Callable[..., Any]] = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     "step": torch.optim.lr_scheduler.StepLR,
     "cosine": torch.optim.lr_scheduler.CosineAnnealingLR,
+    "none": _constant_lr,
 }
 
 # early_stopping_metric -> (key in the validate() dict, optimization direction). The metric named
@@ -141,6 +149,10 @@ def build_scheduler(optimizer: torch.optim.Optimizer, cfg: TrainConfig):
         )
     scheduler_cls = SCHEDULERS[name]
     kwargs = dict(cfg.lr_scheduler.kwargs)  # copy: never mutate the validated config
+
+    # "none" takes no kwargs; say so here rather than via a TypeError naming a private helper.
+    if name == "none" and kwargs:
+        raise ValueError(f"lr_scheduler 'none' takes no kwargs, got {sorted(kwargs)}.")
 
     if scheduler_cls is torch.optim.lr_scheduler.ReduceLROnPlateau:
         required_mode = _METRIC_MODE[cfg.early_stopping_metric]

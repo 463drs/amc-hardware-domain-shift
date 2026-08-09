@@ -27,7 +27,8 @@ train:
     kwargs: {}               # extra optimizer args (e.g. betas); none beyond lr/weight_decay here
   learning_rate: 0.001       # Adam default; O'Shea et al. train with Adam
   weight_decay: 0.0          # no L2 penalty in the baseline
-  lr_scheduler:              # name resolved by src/train.py
+  lr_scheduler:              # name resolved by src/train.py: reduce_on_plateau | step | cosine |
+                             # none. "none" holds the LR constant and takes no kwargs ({}).
     name: reduce_on_plateau
     kwargs:                  # forwarded verbatim to torch.optim.lr_scheduler.ReduceLROnPlateau
       mode: max              # must match early_stopping_metric's direction; src/train.py overrides
