@@ -5,6 +5,7 @@ __pycache__/
 venv/
 *.egg-info/
 pyrefly.toml
+runs/
 # jupyter
 .ipynb_checkpoints/
 
