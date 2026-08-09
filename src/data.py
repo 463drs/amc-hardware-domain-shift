@@ -27,7 +27,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.config import Config, DataConfig
 from src.logging_utils import get_logger
@@ -50,7 +50,11 @@ KEY_X, KEY_Y, KEY_Z = "X", "Y", "Z"
 _NORM_EPS: float = 1e-12
 
   # >= abs(min possible SNR); keeps seed components non-negative
-_SNR_SEED_OFFSET = 32 
+_SNR_SEED_OFFSET = 32
+
+# Fixed seed for the train-metric evaluation subset (see build_train_eval_loader). Measurement
+# only -- it selects which training frames are re-scored, never which are trained on.
+_TRAIN_EVAL_SUBSET_SEED = 4242
 # Per-frame normalization (named + configurable)
 
 def _normalize_none(iq: torch.Tensor) -> torch.Tensor:
@@ -401,3 +405,32 @@ def build_dataloaders(
     val_loader = DataLoader(val_ds, shuffle=False, drop_last=False, **common)
     test_loader = DataLoader(test_ds, shuffle=False, drop_last=False, **common)
     return train_loader, val_loader, test_loader
+
+
+def build_train_eval_loader(
+    config: Config, train_loader: DataLoader, val_loader: DataLoader
+) -> DataLoader:
+    """Eval-mode loader over a FIXED random subset of the TRAINING frames.
+
+    Exists so train and val metrics are measured identically -- one set of weights, eval mode,
+    no dropout -- making their gap a real generalization gap. The in-loop running average cannot
+    be: it mixes predictions from every weight state of the epoch, with AlphaDropout active.
+    Seeded by a module constant, so the same frames are used every epoch and every run, and
+    sized to match val so both metrics carry the same sampling noise.
+    """
+    dataset = train_loader.dataset
+    n = min(len(val_loader.dataset), len(dataset))  # type: ignore[arg-type]
+    rng = np.random.default_rng(_TRAIN_EVAL_SUBSET_SEED)
+    picked = np.sort(rng.choice(len(dataset), size=n, replace=False))  # type: ignore[arg-type]
+
+    workers = 0 if config.data.preload else config.train.num_workers
+    return DataLoader(
+        Subset(dataset, picked.tolist()),
+        batch_size=config.train.batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=workers,
+        worker_init_fn=_worker_init_fn if workers > 0 else None,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=workers > 0,
+    )
