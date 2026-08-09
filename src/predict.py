@@ -15,7 +15,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from src.config import Config, resolve_config_path
+from src.config import Config
+from src.load_best_models import download_checkpoints_by_config
 from src.data import build_dataloaders, MODULATION_CLASSES
 from src.models import build_model
 
@@ -189,11 +190,11 @@ def save_predictions(
     return out
 
 
-def run_all(cfg: Config, root: Path = Path("runs")) -> List[Path]:
+def run_all(cfg: Config, root: Path = Path("runs"), condition : str | None = None) -> List[Path]:
     """Verify, then produce predictions for every cell."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"using device {device}")
-    found = discover_cells(root)
+    download_checkpoints_by_config(cfg)
+    found = discover_cells(root, condition)
     verify_cells(expected_cells(cfg), found)
     verify_split(cfg, found)
 
