@@ -27,8 +27,14 @@ import yaml
 # Ratios must sum to 1 within this tolerance (guards against typos like [0.7, 0.15, 0.1]).
 _SPLIT_SUM_TOL = 1e-6
 
-# Early stopping watches exactly one validation metric (see TrainConfig.early_stopping_metric).
-_EARLY_STOPPING_METRICS: Tuple[str, ...] = ("val_loss", "val_accuracy")
+# The monitored validation metric (see TrainConfig.early_stopping_metric). It selects the best
+# checkpoint ALWAYS, and additionally drives early stopping when that is enabled.
+# "val_accuracy_snr_geq_0db" is the study's headline metric (accuracy over SNR >= 0 dB). Monitoring
+# it directly stops best.pt being chosen on a proxy that moves the other way: val_loss can rise
+# from growing over-confidence on the errors while accuracy is still climbing, which selects a
+_EARLY_STOPPING_METRICS: Tuple[str, ...] = (
+    "val_loss", "val_accuracy", "val_accuracy_snr_geq_0db",
+)
 
 # W&B run modes (see ExperimentConfig.mode). "disabled" makes tracking a no-op so the debug
 # config and the test suite run with no W&B account, network, or even the wandb package.
@@ -114,6 +120,13 @@ class TrainConfig:
     NOTE: `seeds` here is the TRAINING seeds (model init, shuffling, dropout). It is
     intentionally separate from data.subset_seed and data.split_seed so that the exact
     same data can be reused across many training seeds.
+
+    NOTE on the two early-stopping knobs: `early_stopping_metric` is monitored whether or not
+    stopping is enabled -- it is what selects best.pt. `early_stopping_enabled` only decides
+    whether running out of patience ENDS the run; with it False the loop trains to max_epochs
+    and still checkpoints the best epoch. `early_stopping_patience` is required either way so
+    the YAML stays a complete description of the recipe, and flipping the switch back on needs
+    no other edit.
     """
 
     seeds: list[int]
@@ -124,11 +137,13 @@ class TrainConfig:
     weight_decay: float
     lr_scheduler: NamedComponentConfig    # {name, kwargs}, e.g. reduce_on_plateau
     max_epochs: int                       # hard ceiling on training length, regardless of early stopping
+    early_stopping_enabled: bool          # False => always train the full max_epochs budget
     early_stopping_patience: int          # epochs without improvement tolerated before stopping
-    early_stopping_metric: str            # which validation metric early stopping watches
+    early_stopping_metric: str            # monitored metric: picks best.pt, and early-stops when enabled
     amp_enabled: bool                     # mixed precision; config-controlled so it can be disabled per run
 
     def __post_init__(self) -> None:
+        self._validate_seeds()
         # optimizer/lr_scheduler arrive from YAML as plain mappings; validate and wrap them.
         self.optimizer = _coerce_named_component(self.optimizer, "train.optimizer")
         self.lr_scheduler = _coerce_named_component(self.lr_scheduler, "train.lr_scheduler")
@@ -146,6 +161,12 @@ class TrainConfig:
             raise ValueError(f"train.weight_decay must be >= 0, got {self.weight_decay}")
         if self.max_epochs < 1:
             raise ValueError(f"train.max_epochs must be >= 1, got {self.max_epochs}")
+        # A truthiness check would accept 1/0 and the string "false"; the latter would silently
+        # turn early stopping ON. Same loud-failure rule as amp_enabled / data.preload.
+        if not isinstance(self.early_stopping_enabled, bool):
+            raise ValueError(
+                f"train.early_stopping_enabled must be a boolean, got {self.early_stopping_enabled!r}"
+            )
         if self.early_stopping_patience < 1:
             raise ValueError(
                 f"train.early_stopping_patience must be >= 1, got {self.early_stopping_patience}"
@@ -158,6 +179,28 @@ class TrainConfig:
         # A truthiness check would accept 1/0; require an actual bool so YAML `1` fails loudly.
         if not isinstance(self.amp_enabled, bool):
             raise ValueError(f"train.amp_enabled must be a boolean, got {self.amp_enabled!r}")
+
+    def _validate_seeds(self) -> None:
+        """Require `seeds` to be a genuine list of distinct ints."""
+        if isinstance(self.seeds, (dict, set, frozenset)):
+            raise ValueError(
+                f"train.seeds must be a YAML list, e.g. [10, 11, 12]; got {self.seeds!r}. "
+                f"Braces ({{10, 11, 12}}) are YAML set/mapping syntax, not a list."
+            )
+        if not isinstance(self.seeds, (list, tuple)) or not self.seeds:
+            raise ValueError(
+                f"train.seeds must be a non-empty list of ints, got {self.seeds!r}"
+            )
+        # bool is a subclass of int, so `seeds: [true]` would otherwise pass as seed 1.
+        bad = [s for s in self.seeds if isinstance(s, bool) or not isinstance(s, int)]
+        if bad:
+            raise ValueError(f"train.seeds must contain only ints, got {bad!r} in {self.seeds!r}")
+        if len(set(self.seeds)) != len(self.seeds):
+            raise ValueError(
+                f"train.seeds contains duplicates: {self.seeds!r}. Each seed is one repeat of "
+                f"the experiment, so a duplicate silently shrinks the matrix."
+            )
+        self.seeds = [int(s) for s in self.seeds]
 
 
 @dataclass

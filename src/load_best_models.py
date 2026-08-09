@@ -16,13 +16,17 @@ class RunRef:
     _raw: Any 
 
 def get_runs_by_config(config: Config) -> list[RunRef]:
-    """Get all runs based on config"""
+    """Get all runs of this config's condition, matched on the logged `condition` key.
+
+    Not name.startswith(): "baseline" also prefixes "baseline_v2", and the name is not authoritative.
+    """
     api = wandb.Api()
-    return [
-        RunRef(id=r.id, name=r.name, config=dict(r.config), _raw=r)
-        for r in api.runs(config.experiment.project)
-        if r.name.startswith(config.experiment.condition)
-    ]
+    runs: list[RunRef] = []
+    for r in api.runs(config.experiment.project):
+        cfg = dict(r.config)
+        if cfg.get("condition") == config.experiment.condition:
+            runs.append(RunRef(id=r.id, name=r.name, config=cfg, _raw=r))
+    return runs
 
 def download_best(run: RunRef, dest: Path) -> Path:
     """Download best artifacts from given run"""
@@ -34,7 +38,12 @@ def download_best(run: RunRef, dest: Path) -> Path:
 def download_checkpoints_by_config(config: Config):
     """Download all checkpoints for given config"""
     for run in get_runs_by_config(config):
-        seed = run.name.split('_')[1]
+        if "seed" not in run.config:
+            raise RuntimeError(
+                f"run {run.name!r} ({run.id}) logs no top-level 'seed'; it predates src.train "
+                f"recording it and cannot be placed in the matrix. Retrain the cell."
+            )
+        seed = run.config["seed"]
         destination = Path(f"runs/{config.experiment.condition}/seed{seed}")
         download_best(run, destination)
 

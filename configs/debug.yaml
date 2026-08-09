@@ -14,7 +14,7 @@ model:
   dropout_p: 0.5
   init_scheme: kaiming_linear
 train:
-  seeds: {0, 1, 2}
+  seeds: [0, 1, 2]
   batch_size: 16
   num_workers: 0             # 0 workers: simplest, no fork/spawn on a laptop
   optimizer:
@@ -25,12 +25,13 @@ train:
   lr_scheduler:
     name: reduce_on_plateau
     kwargs:
-      mode: min
+      mode: max              # matches early_stopping_metric (accuracy: higher is better)
       factor: 0.5
       patience: 2
   max_epochs: 3              # tiny ceiling: this config is just a fast end-to-end smoke run
+  early_stopping_enabled: true   # on, so the smoke run exercises the early-stop branch
   early_stopping_patience: 2
-  early_stopping_metric: val_loss
+  early_stopping_metric: val_accuracy_snr_geq_0db  # snr_min is 20, so every frame counts here
   amp_enabled: false         # CPU debug run: keep full precision, no AMP
 experiment:
   project: amc-hardware-domain-shift
