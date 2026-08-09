@@ -1,6 +1,6 @@
 """Tests for the checkpoint/resume reproducibility fixes and per-SNR validation.
 
-These exercise fit()/validate()/build_scheduler()/_save_checkpoint()/_load_checkpoint()
+These exercise fit()/validate()/build_scheduler()/save_checkpoint()/load_checkpoint()
 directly with tiny models and fake loaders -- no config file, no W&B, no real data -- which is
 exactly the property fit() is designed to preserve.
 
@@ -23,7 +23,7 @@ import torch.nn as nn
 
 import scripts.train as train_cli
 import src.train as train
-from src.checkpointing import _load_checkpoint, _save_checkpoint, select_resume_checkpoint
+from src.checkpointing import load_checkpoint, save_checkpoint, select_resume_checkpoint
 from src.config import (
     Config,
     TrainConfig,
@@ -65,10 +65,10 @@ def test_checkpoint_roundtrip_restores_rng(tmp_path):
     _ = torch.randn(7); _ = np.random.rand(7); _ = random.random()
 
     ckpt = tmp_path / "ckpt.pt"
-    _save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=None,
+    save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=None,
                            epoch=4, best_metric=0.25, epochs_no_improve=2, run_id="r")
 
-    # _save_checkpoint does not advance any RNG, so the persisted state == the state right now.
+    # save_checkpoint does not advance any RNG, so the persisted state == the state right now.
     exp_torch = torch.get_rng_state().clone()
     exp_np = np.random.get_state()
     exp_py = random.getstate()
@@ -78,7 +78,7 @@ def test_checkpoint_roundtrip_restores_rng(tmp_path):
     torch.manual_seed(999); np.random.seed(999); random.seed(999)
     assert not torch.equal(torch.get_rng_state(), exp_torch)
 
-    state = _load_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched,
+    state = load_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched,
                                    scaler=None, device=CPU)
 
     assert torch.equal(torch.get_rng_state(), exp_torch)
@@ -165,7 +165,7 @@ def test_select_resume_checkpoint_prefers_higher_epoch(tmp_path):
     best_ckpt, last_ckpt = tmp_path / "best.pt", tmp_path / "last.pt"
 
     def save(path, epoch):
-        _save_checkpoint(path, model=model, optimizer=opt, scheduler=sched, scaler=None,
+        save_checkpoint(path, model=model, optimizer=opt, scheduler=sched, scaler=None,
                                epoch=epoch, best_metric=0.5, epochs_no_improve=0, run_id="r")
 
     # best.pt from an older improvement, last.pt from a later (non-improving) epoch.
@@ -188,7 +188,7 @@ def test_select_resume_checkpoint_handles_missing_and_corrupt(tmp_path):
 
     model, opt, sched = _tiny_setup()
     good = tmp_path / "good.pt"
-    _save_checkpoint(good, model=model, optimizer=opt, scheduler=sched, scaler=None,
+    save_checkpoint(good, model=model, optimizer=opt, scheduler=sched, scaler=None,
                            epoch=3, best_metric=0.5, epochs_no_improve=1, run_id="r")
     assert select_resume_checkpoint(corrupt, missing, good) == good
 
@@ -211,34 +211,36 @@ def test_set_seed_still_pins_cudnn():
     assert torch.backends.cudnn.benchmark is False
 
 
-RUN_NAME = "debug_0"   # configs/debug.yaml: experiment.condition=debug, train.seed=0
+SEED = 0
+RUN_NAME = f"debug_{SEED}"   # train() names a run "<experiment.condition>_<seed>"
 
 
 def _debug_config():
     return Config.from_yaml(resolve_config_path("debug"))
 
 
-def _stub_main(tmp_path, monkeypatch):
-    """Patch the heavy parts of main(); return (seed_calls, fit_kwargs, loaded_paths).
+def _stub_train(tmp_path, monkeypatch):
+    """Patch the heavy parts of train(); return (seed_calls, fit_kwargs, loaded_paths).
 
-    set_cudnn_determinism, _resolve_resume_target, _load_checkpoint and the fingerprint logic
-    are left REAL -- they are what these tests exercise.
+    set_cudnn_determinism, resolve_resume_target, load_checkpoint and the fingerprint logic
+    are left REAL -- they are what these tests exercise. W&B needs no stub: configs/debug.yaml
+    sets experiment.mode=disabled, so _init_wandb returns None without importing wandb.
     """
     seed_calls, fit_kwargs, loaded = [], {}, []
     monkeypatch.setattr(train, "OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(train, "configure_logging", lambda **kw: None)
     monkeypatch.setattr(train, "build_dataloaders",
-                        lambda cfg: (_tiny_loader(), _tiny_loader(), _tiny_loader()))
+                        lambda cfg, seed: (_tiny_loader(), _tiny_loader(), _tiny_loader()))
     monkeypatch.setattr(train, "build_model", lambda mcfg, n_classes: nn.Linear(4, n_classes))
     monkeypatch.setattr(train, "set_seed", lambda s: seed_calls.append(s))
 
-    real_load = train._load_checkpoint
+    real_load = train.load_checkpoint
 
     def _tracking_load(path, **kwargs):
         loaded.append(path)
         return real_load(path, **kwargs)
 
-    monkeypatch.setattr(train, "_load_checkpoint", _tracking_load)
+    monkeypatch.setattr(train, "load_checkpoint", _tracking_load)
 
     def _fake_fit(*a, **k):
         fit_kwargs.update(k)
@@ -258,40 +260,40 @@ def _write_checkpoint(path, *, epoch, config_fp, n_classes=24):
     model = nn.Linear(4, n_classes)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=0.0)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=2)
-    _save_checkpoint(path, model=model, optimizer=opt, scheduler=sched, scaler=None,
+    save_checkpoint(path, model=model, optimizer=opt, scheduler=sched, scaler=None,
                            epoch=epoch, best_metric=0.5, epochs_no_improve=1, run_id=RUN_NAME,
                            config_metadata=config_fp)
 
 
-# Three-state resume contract.
+# Three-state resume contract (train() is the entry point; --seed comes from the CLI, not YAML).
 
 def test_main_no_flag_empty_dir_starts_fresh(tmp_path, monkeypatch):
-    seed_calls, fit_kwargs, _ = _stub_main(tmp_path, monkeypatch)
-    train.main("debug")
-    assert seed_calls == [0], "a fresh run seeds from config train.seed"
+    seed_calls, fit_kwargs, _ = _stub_train(tmp_path, monkeypatch)
+    train.train("debug", seed=SEED)
+    assert seed_calls == [SEED], "a fresh run seeds from the seed it was called with"
     assert fit_kwargs["start_epoch"] == 1
     assert torch.backends.cudnn.deterministic is True
     assert torch.backends.cudnn.benchmark is False
 
 
 def test_main_no_flag_with_existing_checkpoint_refuses(tmp_path, monkeypatch):
-    _stub_main(tmp_path, monkeypatch)
+    _stub_train(tmp_path, monkeypatch)
     _write_checkpoint(tmp_path / RUN_NAME / "last.pt", epoch=30,
                       config_fp=_config_fingerprint(_debug_config()))
     with pytest.raises(RuntimeError) as err:
-        train.main("debug")
+        train.train("debug", seed=SEED)
     message = str(err.value)
     assert RUN_NAME in message and "30" in message           # names the run dir and the epoch
     assert "--resume" in message and "--fresh" in message and "--run-id" in message
 
 
 def test_main_resume_continues_from_higher_epoch(tmp_path, monkeypatch):
-    seed_calls, fit_kwargs, loaded = _stub_main(tmp_path, monkeypatch)
+    seed_calls, fit_kwargs, loaded = _stub_train(tmp_path, monkeypatch)
     fingerprint = _config_fingerprint(_debug_config())
     _write_checkpoint(tmp_path / RUN_NAME / "best.pt", epoch=4, config_fp=fingerprint)
     _write_checkpoint(tmp_path / RUN_NAME / "last.pt", epoch=9, config_fp=fingerprint)
 
-    train.main("debug", resume=True)
+    train.train("debug", seed=SEED, resume=True)
 
     assert loaded == [tmp_path / RUN_NAME / "last.pt"], "must resume the higher-epoch file"
     assert fit_kwargs["start_epoch"] == 10
@@ -300,42 +302,45 @@ def test_main_resume_continues_from_higher_epoch(tmp_path, monkeypatch):
 
 
 def test_main_resume_without_checkpoint_raises(tmp_path, monkeypatch):
-    _stub_main(tmp_path, monkeypatch)
+    _stub_train(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="no usable checkpoint"):
-        train.main("debug", resume=True)
+        train.train("debug", seed=SEED, resume=True)
 
 
 def test_main_resume_explicit_path(tmp_path, monkeypatch):
-    _, fit_kwargs, loaded = _stub_main(tmp_path, monkeypatch)
+    _, fit_kwargs, loaded = _stub_train(tmp_path, monkeypatch)
     explicit = tmp_path / "elsewhere" / "snapshot.pt"
     _write_checkpoint(explicit, epoch=12, config_fp=_config_fingerprint(_debug_config()))
-    train.main("debug", resume=str(explicit))
+    train.train("debug", seed=SEED, resume=str(explicit))
     assert loaded == [explicit]
     assert fit_kwargs["start_epoch"] == 13
 
 
 def test_main_fresh_discards_existing_checkpoint(tmp_path, monkeypatch):
-    seed_calls, fit_kwargs, loaded = _stub_main(tmp_path, monkeypatch)
+    seed_calls, fit_kwargs, loaded = _stub_train(tmp_path, monkeypatch)
     _write_checkpoint(tmp_path / RUN_NAME / "last.pt", epoch=7,
                       config_fp=_config_fingerprint(_debug_config()))
 
-    train.main("debug", fresh=True)
+    # run_id pins the run dir onto the existing checkpoint: a bare --fresh would instead get a
+    # timestamped run name (a fresh dir), so the discard would be untested.
+    train.train("debug", seed=SEED, fresh=True, run_id=RUN_NAME)
 
     assert fit_kwargs["start_epoch"] == 1
-    assert seed_calls == [0]
+    assert seed_calls == [SEED]
     assert loaded == [], "--fresh must not load the existing checkpoint"
     assert torch.backends.cudnn.deterministic is True
 
 
 def test_cli_resume_and_fresh_are_mutually_exclusive():
     parser = train_cli.build_parser()
+    base = ["--config", "debug", "--seed", "0"]
     with pytest.raises(SystemExit):
-        parser.parse_args(["--config", "debug", "--resume", "--fresh"])
+        parser.parse_args(base + ["--resume", "--fresh"])
     # Each alone parses into the three-state contract.
-    assert parser.parse_args(["--config", "debug"]).resume is None
-    assert parser.parse_args(["--config", "debug", "--resume"]).resume is True
-    assert parser.parse_args(["--config", "debug", "--resume", "x.pt"]).resume == "x.pt"
-    assert parser.parse_args(["--config", "debug", "--fresh"]).fresh is True
+    assert parser.parse_args(base).resume is None
+    assert parser.parse_args(base + ["--resume"]).resume is True
+    assert parser.parse_args(base + ["--resume", "x.pt"]).resume == "x.pt"
+    assert parser.parse_args(base + ["--fresh"]).fresh is True
 
 
 def test_cli_help_runs_from_a_clean_interpreter():
@@ -355,7 +360,7 @@ def test_saved_checkpoint_stores_config_fingerprint(tmp_path):
     fingerprint = _config_fingerprint(_debug_config())
     model, opt, sched = _tiny_setup()
     path = tmp_path / "ckpt.pt"
-    _save_checkpoint(path, model=model, optimizer=opt, scheduler=sched, scaler=None,
+    save_checkpoint(path, model=model, optimizer=opt, scheduler=sched, scaler=None,
                            epoch=1, best_metric=0.1, epochs_no_improve=0, run_id="r",
                            config_metadata=fingerprint)
     assert torch.load(path, weights_only=False)["config"] == fingerprint
@@ -376,38 +381,24 @@ def test_fingerprint_is_machine_independent():
 
 
 def test_resume_with_changed_config_raises(tmp_path, monkeypatch):
-    _stub_main(tmp_path, monkeypatch)
+    _stub_train(tmp_path, monkeypatch)
     stale = _config_fingerprint(_debug_config())
     stale["train"]["learning_rate"] = 0.0003        # checkpoint predates an lr change
     _write_checkpoint(tmp_path / RUN_NAME / "last.pt", epoch=5, config_fp=stale)
 
     with pytest.raises(RuntimeError) as err:
-        train.main("debug", resume=True)
+        train.train("debug", seed=SEED, resume=True)
     message = str(err.value)
     assert "train.learning_rate" in message         # names the specific key...
     assert "0.0003" in message and "0.001" in message   # ...and both values
-    assert "--allow-config-change" in message
-
-
-def test_resume_with_changed_config_allowed_warns(tmp_path, monkeypatch, caplog):
-    _, fit_kwargs, _ = _stub_main(tmp_path, monkeypatch)
-    stale = _config_fingerprint(_debug_config())
-    stale["train"]["learning_rate"] = 0.0003
-    _write_checkpoint(tmp_path / RUN_NAME / "last.pt", epoch=5, config_fp=stale)
-
-    with caplog.at_level(logging.WARNING):
-        train.main("debug", resume=True, allow_config_change=True)
-
-    assert fit_kwargs["start_epoch"] == 6, "must proceed rather than raise"
-    assert any("train.learning_rate" in r.getMessage() for r in caplog.records)
 
 
 def test_resume_from_legacy_checkpoint_warns(tmp_path, monkeypatch, caplog):
-    _, fit_kwargs, _ = _stub_main(tmp_path, monkeypatch)
+    _, fit_kwargs, _ = _stub_train(tmp_path, monkeypatch)
     _write_checkpoint(tmp_path / RUN_NAME / "last.pt", epoch=3, config_fp=None)  # no config key
 
     with caplog.at_level(logging.WARNING):
-        train.main("debug", resume=True)
+        train.train("debug", seed=SEED, resume=True)
 
     assert fit_kwargs["start_epoch"] == 4
     assert any("cannot verify config drift" in r.getMessage() for r in caplog.records)
@@ -435,7 +426,7 @@ def test_checkpoint_omits_scaler_when_disabled(tmp_path):
     sched = torch.optim.lr_scheduler.StepLR(opt, step_size=1)
     scaler = torch.amp.GradScaler("cuda", enabled=False)  # inert on CPU / no-AMP
     ckpt = tmp_path / "ckpt.pt"
-    _save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=scaler,
+    save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=scaler,
                            epoch=1, best_metric=0.1, epochs_no_improve=0, run_id="r")
     assert "scaler" not in torch.load(ckpt, weights_only=False)
 
@@ -448,10 +439,10 @@ def test_checkpoint_roundtrip_restores_scaler(tmp_path):
     scaler = torch.amp.GradScaler("cuda", enabled=True)
     saved_scale = scaler.get_scale()
     ckpt = tmp_path / "ckpt.pt"
-    _save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=scaler,
+    save_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched, scaler=scaler,
                            epoch=1, best_metric=0.1, epochs_no_improve=0, run_id="r")
     fresh = torch.amp.GradScaler("cuda", enabled=True)
-    _load_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched,
+    load_checkpoint(ckpt, model=model, optimizer=opt, scheduler=sched,
                            scaler=fresh, device=torch.device("cuda"))
     assert fresh.get_scale() == saved_scale
 
@@ -460,7 +451,7 @@ def test_checkpoint_roundtrip_restores_scaler(tmp_path):
 
 def _tcfg(sched_kwargs, metric="val_loss"):
     return TrainConfig(
-        seed=0, batch_size=4, num_workers=0,
+        seeds=[0], batch_size=4, num_workers=0,
         optimizer={"name": "adam", "kwargs": {}},
         learning_rate=1e-3, weight_decay=0.0,
         lr_scheduler={"name": "reduce_on_plateau", "kwargs": sched_kwargs},
