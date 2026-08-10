@@ -12,7 +12,7 @@ model:
   dropout_p: 0.5
   init_scheme: kaiming_linear
 train:
-  seeds: [10, 11, 12, 13, 14, 15]
+  seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
   batch_size: 256
   num_workers: 0
   optimizer:
