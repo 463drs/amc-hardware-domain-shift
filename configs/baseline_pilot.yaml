@@ -21,8 +21,10 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   lr_scheduler:
-    name: none
-    kwargs: {}
+    name: reduce_on_plateau
+    kwargs:
+      factor: 0.5
+      patience: 5
   max_epochs: 150
   early_stopping_enabled: false          # train the full budget; val_loss-based stopping was
                                          # halting these runs at ~40 epochs with accuracy still climbing
