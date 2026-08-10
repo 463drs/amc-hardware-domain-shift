@@ -197,7 +197,7 @@ def train_one_epoch(
     running_loss, correct, total = 0.0, 0, 0
 
     for iq, labels, _snr in tqdm(loader, desc="train", leave=False,
-                                 disable=_progress_disabled(progress)):
+                                 disable=_progress_disabled(progress), mininterval=5.0):
         iq = iq.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -247,7 +247,7 @@ def validate(
     correct_geq0, total_geq0 = 0, 0
 
     for iq, labels, snr in tqdm(loader, desc="val", leave=False,
-                                disable=_progress_disabled(progress)):
+                                disable=_progress_disabled(progress), mininterval=5.0):
         iq = iq.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         logits = model(iq)
