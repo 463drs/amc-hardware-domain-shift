@@ -9,7 +9,7 @@ data:
   normalization: unit_power
   preload: true
 model:
-  dropout_p: 0.5
+  dropout_p: 0.4
   init_scheme: kaiming_linear
 train:
   seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
@@ -24,7 +24,7 @@ train:
     name: cosine
     kwargs:
       T_max: 130
-      eta_min: 1.0e-6
+      eta_min: 1.0e-5
   max_epochs: 130
   early_stopping_enabled: false          # train the full budget; val_loss-based stopping was
                                          # halting these runs at ~40 epochs with accuracy still climbing
