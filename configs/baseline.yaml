@@ -23,9 +23,9 @@ train:
   lr_scheduler:
     name: cosine
     kwargs:
-      T_max: 150
+      T_max: 130
       eta_min: 1.0e-6
-  max_epochs: 150
+  max_epochs: 130
   early_stopping_enabled: false          # train the full budget; val_loss-based stopping was
                                          # halting these runs at ~40 epochs with accuracy still climbing
   early_stopping_patience: 10            # unused while disabled; kept so re-enabling is a one-line flip
