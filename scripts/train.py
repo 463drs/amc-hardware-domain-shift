@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "of last.pt/best.pt; --resume PATH resumes that exact checkpoint")
     intent.add_argument("--fresh", action="store_true",
                         help="ignore any existing checkpoints and train from epoch 1")
+    # Console output only.
+    parser.add_argument("--no-progress", "--no_progress", dest="no_progress",
+                        action="store_true",
+                        help="suppress the per-epoch tqdm bars; keep the per-epoch summary lines")
 
     return parser
 
@@ -71,7 +75,8 @@ if __name__ == "__main__":
         # override the user: it previously forced fresh=True, so --resume could never take effect
         # and every launch started a new timestamped run.
         summary = train(args.config, seed=args.seed, resume=args.resume, fresh=args.fresh,
-                        run_id=args.run_id)
+                        run_id=args.run_id,
+                        progress=False if args.no_progress else None)
     except BaseException as exc:
         # Notify then re-raise: the exit code is what orchestration.py reads, so it must survive.
         send_telegram_notification(

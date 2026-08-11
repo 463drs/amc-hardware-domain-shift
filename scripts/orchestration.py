@@ -46,7 +46,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "checkpoint (only meaningful with a single seed)")
     intent.add_argument("--fresh", action="store_true",
                         help="ignore any existing checkpoints and train from epoch 1, makes run id not determenistic")
-
+    # Console output only.
+    parser.add_argument("--no-progress", "--no_progress", dest="no_progress",
+                        action="store_true",
+                        help="suppress the per-epoch tqdm bars; keep the per-epoch summary lines")
     return parser
 
 if __name__ == "__main__":
@@ -91,8 +94,10 @@ if __name__ == "__main__":
                 "-u",
                 str(_REPO_ROOT / "scripts" / "train.py"),
                 "--config", args.config,
-                "--seed", str(seed),
+                "--seed", str(seed)
             ]
+            if args.no_progress:
+                cmd.append("--no-progress")
             # Forward the intent flags so the orchestrated run behaves exactly like the same
             # command typed by hand -- without this, --resume was silently dropped.
             if args.fresh:

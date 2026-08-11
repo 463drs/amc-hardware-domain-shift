@@ -541,7 +541,8 @@ def train(
     seed: int,
     resume: "str | bool | None" = None,
     fresh: bool = False,
-    run_id: str | None = None
+    run_id: Optional[str] = None,
+    progress: Optional[bool] = None,
 ) -> dict:
     """Train a model end-to-end from a config; return the fit() summary plus run metadata.
 
@@ -553,6 +554,7 @@ def train(
                   True = continue from the newer of last.pt/best.pt; a path = that checkpoint.
     fresh       : discard any existing checkpoints and train from epoch 1.
     run_id      : optional override of the run NAME; defaults to "<condition>_<seed>".
+    progress    : per-epoch tqdm bars. false = no progress bar
     """
     config = Config.from_yaml(resolve_config_path(config_path))
     tcfg = config.train
@@ -652,6 +654,7 @@ def train(
             checkpoint_metadata=fingerprint,
             run_id=run_name,
             on_epoch_end=_make_wandb_epoch_callback(run, best_ckpt=best_ckpt, run_id=run_name),
+            progress=progress,
         )
     finally:
         # Always close the W&B run, even if training raises, so the run isn't left "running".
