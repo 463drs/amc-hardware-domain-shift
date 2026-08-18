@@ -1,0 +1,46 @@
+# The six experimental conditions: R_theta per condition, one frozen dataset each.
+# Operator lists read ALONG the signal chain (phase noise first, ADC last).
+
+# TODO(open decision): the AGC reference below is a PLACEHOLDER, not a chosen model. It sets
+# what b and d mean physically; candidates peak/percentile/fixed, compared in notebook 03.
+_reference: &reference
+  name: percentile
+  kwargs: {percentile: 99.9, headroom_db: 0.0}
+
+conditions:
+
+  # theta = identity. Output must be bit-identical to the source subset.
+  baseline: []
+
+  phase_noise:
+    - name: phase_noise
+      kwargs: {sigma_w: 0.01}          # rad/sample; Wiener increment std
+
+  iq_imbalance:
+    - name: iq_imbalance
+      kwargs: {gain_db: 0.4, phase_deg: 3.0}   # mid literature range -> IRR ~31 dB
+
+  quantization:
+    - name: quantize
+      kwargs: {n_bits: 8, reference: *reference}   # RTL-SDR ADC is 8-bit
+  dc_offset:
+    - name: dc_offset
+      kwargs: {offset_i: 0.01, offset_q: -0.005, reference: *reference}
+
+  all:
+    - name: phase_noise
+      kwargs: {sigma_w: 0.01}
+    - name: iq_imbalance
+      kwargs: {gain_db: 0.4, phase_deg: 3.0}
+    - name: dc_offset
+      kwargs: {offset_i: 0.01, offset_q: -0.005, reference: *reference}
+    - name: quantize
+      kwargs: {n_bits: 8, reference: *reference}
+
+  # TODO: awaiting bench measurement of the actual receiver; values below are placeholders
+  # and this condition must NOT be generated until they are measured.
+  calibrated:
+    - name: phase_noise
+      kwargs: {sigma_w: 0.0}
+    - name: iq_imbalance
+      kwargs: {gain_db: 0.0, phase_deg: 0.0}
