@@ -13,6 +13,7 @@ from scripts.check_condition import (
     lag_variance_fit,
 )
 from src.distortions import (
+    Compose,
     DCOffset,
     FixedReference,
     IQImbalance,
@@ -60,7 +61,7 @@ def test_recovers_gain_phase_and_irr(gain_db, phase_deg):
 def test_recovers_bit_depth(n_bits):
     """Exact when the signal exercises the full range, which a per-frame reference ensures."""
     clean = _clean()
-    dirty = _apply(Quantize(n_bits, PeakReference()), clean)
+    dirty = _apply(Compose([Quantize(n_bits)], reference=PeakReference()), clean)
     n_levels, bits, _ = estimate_quantization_bits(dirty)
     assert bits == pytest.approx(n_bits, abs=0.2)
     assert n_levels <= 2 ** n_bits
@@ -70,7 +71,7 @@ def test_bit_depth_is_a_lower_bound_when_the_signal_never_clips():
     """With headroom the outer codes are unused, so full scale is not identifiable."""
     clean = _clean()
     # FS=3.0 against a ~0.707-sigma signal: the rails are ~4 sigma away and never reached.
-    dirty = _apply(Quantize(8, FixedReference(3.0)), clean)
+    dirty = _apply(Compose([Quantize(8)], reference=FixedReference(3.0)), clean)
     _, bits, _ = estimate_quantization_bits(dirty)
     assert bits < 8
     assert bits > 7
@@ -78,7 +79,7 @@ def test_bit_depth_is_a_lower_bound_when_the_signal_never_clips():
 
 def test_recovers_dc_offset():
     clean = _clean()
-    dirty = _apply(DCOffset(0.02, -0.01, FixedReference(3.0)), clean)
+    dirty = _apply(Compose([DCOffset(0.02, -0.01)], reference=FixedReference(3.0)), clean)
     off_i, off_q = estimate_dc_offset(clean, dirty)
     # Recovered against the frame's own peak, so exact only in sign and rough magnitude.
     assert off_i > 0 and off_q < 0
@@ -88,7 +89,8 @@ def test_recovers_dc_offset():
 def test_sigma_estimator_survives_added_quantization():
     """The lag-variance fit must not absorb white ADC noise into sigma_w."""
     clean = _clean()
-    noisy = _apply(Quantize(8, FixedReference(3.0)), _apply(PhaseNoise(0.01), clean))
+    noisy = _apply(Compose([Quantize(8)], reference=FixedReference(3.0)),
+                   _apply(PhaseNoise(0.01), clean))
     assert estimate_phase_noise_sigma(clean, noisy) == pytest.approx(0.01, rel=0.25)
 
 
@@ -122,7 +124,7 @@ def test_quantization_noise_raises_the_intercept_not_the_slope():
     """Additive noise is uncorrelated across lags, so it lands entirely in the intercept."""
     clean = _clean()
     clean_phase = _apply(PhaseNoise(0.01), clean)
-    noisy_phase = _apply(Quantize(6, FixedReference(3.0)), clean_phase)
+    noisy_phase = _apply(Compose([Quantize(6)], reference=FixedReference(3.0)), clean_phase)
 
     slope, intercept = lag_variance_fit(clean, clean_phase)
     noisy_slope, noisy_intercept = lag_variance_fit(clean, noisy_phase)
@@ -136,3 +138,10 @@ def test_active_operators_ignores_degenerate_entries():
     assert active_operators({"Quantize": {"n_bits": None}}) == []
     assert active_operators({"PhaseNoise": {"sigma_w": 0.01},
                              "Quantize": {"n_bits": 8}}) == ["PhaseNoise", "Quantize"]
+
+
+def test_active_operators_ignores_the_chain_level_reference():
+    """theta carries the chain's AGC model alongside the operators; it is not an operator."""
+    theta = {"Quantize": {"n_bits": 8},
+             "_reference": {"kind": "peak", "headroom_db": 0.0, "measured_after": "input"}}
+    assert active_operators(theta) == ["Quantize"]

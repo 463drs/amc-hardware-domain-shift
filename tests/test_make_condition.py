@@ -6,23 +6,36 @@ import numpy as np
 import pytest
 import yaml
 
-from scripts.make_condition import _BATCH, load_conditions, make_condition, verify_output
+from scripts.make_condition import (
+    _BATCH,
+    load_conditions,
+    load_sample_rate_hz,
+    make_condition,
+    verify_output,
+)
 from src.data import KEY_X, KEY_Y, KEY_Z
-from src.distortions import apply_to_frame, build_compose, frame_rng
+from src.distortions import apply_to_frame, build_compose, frame_rng, sigma_w_from_phase_noise
 
 N_FRAMES = 40
 FRAME_LEN = 64
 N_CLASSES = 4
 SNR_VALUES = (-10, 0, 10, 20)
 
-# Every operator active, so the driver is exercised on a non-trivial chain.
-_ALL_SPECS = [
+# Every operator active, so the driver is exercised on a non-trivial chain. The reference is a
+# chain-level key: one full-scale level per frame, shared by dc_offset and quantize alike.
+_ALL_OPERATORS = [
     {"name": "phase_noise", "kwargs": {"sigma_w": 0.01}},
     {"name": "iq_imbalance", "kwargs": {"gain_db": 0.4, "phase_deg": 3.0}},
-    {"name": "dc_offset", "kwargs": {"offset_i": 0.01, "offset_q": -0.005,
-                                     "reference": {"name": "peak"}}},
-    {"name": "quantize", "kwargs": {"n_bits": 8, "reference": {"name": "peak"}}},
+    {"name": "dc_offset", "kwargs": {"offset_i": 0.01, "offset_q": -0.005}},
+    {"name": "quantize", "kwargs": {"n_bits": 8}},
 ]
+_ALL_SPECS = {"reference": {"name": "peak"}, "operators": _ALL_OPERATORS}
+
+# f_s is a file-level key, not an operator kwarg: it converts the datasheet-spelled condition
+# below, and is recorded in every output so the assumption travels with the data.
+_SAMPLE_RATE_HZ = 1.024e6
+_DATASHEET_OPERATOR = {"name": "phase_noise",
+                       "kwargs": {"phase_noise_dbc_hz": -98.0, "offset_hz": 1.0e4}}
 
 
 @pytest.fixture(scope="module")
@@ -54,8 +67,13 @@ def source_h5(tmp_path_factory):
 def conditions_file(tmp_path_factory):
     """A conditions YAML covering the identity case and every operator."""
     path = tmp_path_factory.mktemp("configs") / "conditions.yaml"
-    table = {"conditions": {"baseline": [], "all": _ALL_SPECS,
-                            "phase_noise": [_ALL_SPECS[0]], "quantization": [_ALL_SPECS[3]]}}
+    table = {"sample_rate_hz": _SAMPLE_RATE_HZ, "conditions": {
+        "baseline": [],
+        "all": _ALL_SPECS,
+        "phase_noise": [_ALL_OPERATORS[0]],
+        "phase_noise_datasheet": [_DATASHEET_OPERATOR],
+        "quantization": {"reference": {"name": "peak"}, "operators": [_ALL_OPERATORS[3]]},
+    }}
     path.write_text(yaml.safe_dump(table), encoding="utf-8")
     return path
 
@@ -196,8 +214,13 @@ def test_metadata_records_theta_condition_scheme_and_checksum(source_h5, conditi
         assert theta["PhaseNoise"]["sigma_w"] == 0.01
         assert theta["IQImbalance"] == {"gain_db": 0.4, "phase_deg": 3.0}
         assert theta["Quantize"]["n_bits"] == 8
-        assert theta["Quantize"]["reference"]["kind"] == "peak"
+        # One chain-level reference, with the point it was measured at -- not one per operator.
+        assert theta["_reference"]["kind"] == "peak"
+        assert theta["_reference"]["measured_after"] == "IQImbalance"
+        assert "reference" not in theta["Quantize"]
         assert "frame_index" in f.attrs["rng_scheme"]
+        # The rate theta's per-Hz figures were converted against, alongside theta itself.
+        assert f.attrs["sample_rate_hz"] == _SAMPLE_RATE_HZ
         assert f.attrs["content_checksum"].startswith("blake2b16:")
         assert f.attrs["normalization_applied"] == "none"
         # Subset provenance is inherited, so the output is a drop-in for data.path.
@@ -322,10 +345,35 @@ def test_refuses_to_overwrite_the_source(source_h5, conditions_file):
                        out=source_h5, verbose=False)
 
 
+def test_metadata_records_the_datasheet_figures_theta_was_derived_from(
+        source_h5, conditions_file, tmp_path):
+    """A file generated from a per-Hz figure must carry the figure, not only its consequence."""
+    import json
+
+    out = _generate(source_h5, conditions_file, "phase_noise_datasheet", tmp_path)
+    with h5py.File(out, "r") as f:
+        theta = json.loads(f.attrs["theta"])["PhaseNoise"]
+        assert f.attrs["sample_rate_hz"] == _SAMPLE_RATE_HZ
+        assert theta["phase_noise_dbc_hz"] == -98.0
+        assert theta["offset_hz"] == 1.0e4
+        assert theta["sigma_w"] == pytest.approx(
+            sigma_w_from_phase_noise(-98.0, 1.0e4, _SAMPLE_RATE_HZ))
+
+
 def test_repo_conditions_file_builds():
     """The checked-in configs/conditions.yaml must define the study's conditions and build."""
     table = load_conditions()
+    sample_rate_hz = load_sample_rate_hz()
     assert {"baseline", "phase_noise", "iq_imbalance", "quantization", "all"} <= set(table)
-    assert build_compose(table["baseline"]).is_identity
+    # A number, not the string YAML 1.1 makes of an unsigned exponent.
+    assert isinstance(sample_rate_hz, float) and sample_rate_hz > 0
+    assert build_compose(table["baseline"], sample_rate_hz=sample_rate_hz).is_identity
     for name, specs in table.items():
-        build_compose(specs).params()
+        build_compose(specs, sample_rate_hz=sample_rate_hz).params()
+
+    # The study's phase noise comes from the datasheet pair, and every chain that carries the
+    # oscillator agrees on it -- a second spelling of the same part could silently drift.
+    derived = build_compose(table["phase_noise"], sample_rate_hz=sample_rate_hz).params()
+    assert derived["PhaseNoise"]["sigma_w"] == pytest.approx(7.8e-4, rel=0.01)
+    assert build_compose(table["all"], sample_rate_hz=sample_rate_hz).params()["PhaseNoise"] == (
+        derived["PhaseNoise"])

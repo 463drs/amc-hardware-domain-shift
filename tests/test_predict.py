@@ -16,7 +16,14 @@ from pathlib import Path
 import pytest
 
 from src.config import Config, resolve_config_path
-from src.predict import Cell, CellDir, discover_cells, verify_split
+from src.predict import (
+    Cell,
+    CellDir,
+    discover_cells,
+    expected_cells,
+    verify_cells,
+    verify_split,
+)
 
 
 def _cfg() -> Config:
@@ -166,3 +173,23 @@ def test_discover_cells_rejects_metadata_without_identity(tmp_path):
     _write_cell(tmp_path, "debug", 3, meta)
     with pytest.raises(RuntimeError, match="no top-level 'condition'/'seed'"):
         discover_cells(tmp_path)
+
+
+# runs/ holds every downloaded config side by side, so a neighbour is not this cell's problem.
+
+def test_a_neighbouring_conditions_cell_is_not_an_extra(tmp_path):
+    cfg = _cfg()
+    found = [CellDir(cell=Cell(condition=cfg.experiment.condition, seed=s), path=tmp_path,
+                     meta=_meta(cfg, seed=s)) for s in cfg.train.seeds]
+    found.append(CellDir(cell=Cell(condition="phase_noise_100_ex", seed=0), path=tmp_path,
+                         meta=_meta(cfg, condition="phase_noise_100_ex")))
+    verify_cells(expected_cells(cfg), found)
+
+
+def test_an_unexpected_seed_of_this_condition_still_fails(tmp_path):
+    """The filter must scope by condition only -- a seed the config never declared is a defect."""
+    cfg = _cfg()
+    found = [CellDir(cell=Cell(condition=cfg.experiment.condition, seed=s), path=tmp_path,
+                     meta=_meta(cfg, seed=s)) for s in list(cfg.train.seeds) + [999]]
+    with pytest.raises(RuntimeError, match="cell mismatch"):
+        verify_cells(expected_cells(cfg), found)
