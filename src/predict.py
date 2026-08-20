@@ -104,8 +104,13 @@ def discover_cells(root: Path, condition: str | None = None) -> List[CellDir]:
     return found
     
 def verify_cells(expected: Set[Cell], found: List[CellDir]) -> None:
-    """Fail loudly on a missing or extra cell."""
-    got = {c.cell for c in found}
+    """Fail loudly on a missing or extra cell OF THIS EXPERIMENT.
+
+    Cells of another condition are ignored: runs/ holds every downloaded config side by side,
+    and a neighbouring experiment's seed is not a defect in this one.
+    """
+    conditions = {c.condition for c in expected}
+    got = {c.cell for c in found if c.cell.condition in conditions}
     missing, extra = expected - got, got - expected
     if missing or extra:
         raise RuntimeError(f"cell mismatch. missing={sorted(missing)} extra={sorted(extra)}")
@@ -191,10 +196,14 @@ def save_predictions(
 
 
 def run_all(cfg: Config, root: Path = Path("runs"), condition : str | None = None) -> List[Path]:
-    """Verify, then produce predictions for every cell."""
+    """Verify, then produce predictions for every cell.
+
+    Discovery is scoped to this config's condition by default: the test loader below is built
+    from THIS cfg, so scoring a neighbouring condition's checkpoints with it would be wrong.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     download_checkpoints_by_config(cfg)
-    found = discover_cells(root, condition)
+    found = discover_cells(root, condition or cfg.experiment.condition)
     verify_cells(expected_cells(cfg), found)
     verify_split(cfg, found)
 
