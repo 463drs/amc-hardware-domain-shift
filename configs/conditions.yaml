@@ -1,44 +1,52 @@
-# The six experimental conditions: R_theta per condition, one frozen dataset each.
-# Operator lists read ALONG the signal chain (phase noise first, ADC last).
+sample_rate_hz: 1.024e+6
 
-# TODO(open decision): the AGC reference below is a PLACEHOLDER, not a chosen model. It sets
-# what b and d mean physically; candidates peak/percentile/fixed, compared in notebook 03.
 _reference: &reference
   name: percentile
   kwargs: {percentile: 99.9, headroom_db: 0.0}
+
+# The oscillator in datasheet units; sigma_w is DERIVED from these and f_s, never hardcoded.
+# Anchored so the standalone condition and the combined chain cannot disagree about one part.
+_phase_noise: &phase_noise
+  name: phase_noise
+  kwargs:
+    phase_noise_dbc_hz: -98.0   # R820T datasheet, single-sideband
+    offset_hz: 1.0e+4           # ...at a 10 kHz offset -> sigma_w ~ 7.8e-4 rad/sample
 
 conditions:
 
   # theta = identity. Output must be bit-identical to the source subset.
   baseline: []
 
-  phase_noise:
+  # ~13x the datasheet figure: a visible-effect control, not a receiver, so sigma_w is direct.
+  phase_noise_exaggerated:
     - name: phase_noise
-      kwargs: {sigma_w: 0.01}          # rad/sample; Wiener increment std
+      kwargs: {sigma_w: 0.01}   # rad/sample; Wiener increment std
+
+  phase_noise:
+    - *phase_noise
 
   iq_imbalance:
     - name: iq_imbalance
-      kwargs: {gain_db: 0.4, phase_deg: 3.0}   # mid literature range -> IRR ~31 dB
+      kwargs: {gain_db: 0.4, phase_deg: 3.0}   # mid literature range -> IRR ~29.15 dB
 
   quantization:
-    - name: quantize
-      kwargs: {n_bits: 8, reference: *reference}   # RTL-SDR ADC is 8-bit
-  dc_offset:
-    - name: dc_offset
-      kwargs: {offset_i: 0.01, offset_q: -0.005, reference: *reference}
+    reference: *reference
+    operators:
+      - name: quantize
+        kwargs: {n_bits: 8}            # RTL-SDR ADC is 8-bit
 
   all:
-    - name: phase_noise
-      kwargs: {sigma_w: 0.01}
-    - name: iq_imbalance
-      kwargs: {gain_db: 0.4, phase_deg: 3.0}
-    - name: dc_offset
-      kwargs: {offset_i: 0.01, offset_q: -0.005, reference: *reference}
-    - name: quantize
-      kwargs: {n_bits: 8, reference: *reference}
+    reference: *reference
+    operators:
+      - *phase_noise
+      - name: iq_imbalance
+        kwargs: {gain_db: 0.4, phase_deg: 3.0}
+      - name: quantize
+        kwargs: {n_bits: 8}
 
   # TODO: awaiting bench measurement of the actual receiver; values below are placeholders
-  # and this condition must NOT be generated until they are measured.
+  # and this condition must NOT be generated until they are measured. The measured L goes in
+  # as (phase_noise_dbc_hz, offset_hz), like the datasheet figure above.
   calibrated:
     - name: phase_noise
       kwargs: {sigma_w: 0.0}
