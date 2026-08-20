@@ -34,14 +34,37 @@ _INHERITED_ATTRS = (
 )
 
 
-def load_conditions(path: str | Path | None = None) -> dict:
-    """Read the condition -> operator-spec mapping from YAML."""
+def _load_conditions_file(path: str | Path | None = None) -> dict:
+    """Read and validate the whole conditions document."""
     resolved = resolve_config_path(str(path) if path is not None else _DEFAULT_CONDITIONS)
     with Path(resolved).open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     if not isinstance(raw, dict) or "conditions" not in raw:
         raise ValueError(f"{resolved} must be a mapping with a top-level 'conditions' key.")
-    return raw["conditions"]
+    return raw
+
+
+def load_conditions(path: str | Path | None = None) -> dict:
+    """Read the condition -> operator-spec mapping from YAML."""
+    return _load_conditions_file(path)["conditions"]
+
+
+def load_sample_rate_hz(path: str | Path | None = None) -> float | None:
+    """The nominal f_s the file's datasheet figures are converted against; None if undeclared.
+
+    It belongs to the file, not to a condition: one rate converts every per-Hz figure, and it
+    is recorded in each generated dataset so the assumption is readable off the file itself."""
+    raw = _load_conditions_file(path).get("sample_rate_hz")
+    if raw is None:
+        return None
+    try:
+        # float(): YAML 1.1 reads an unsigned exponent (1.024e6) as a string, not a number.
+        sample_rate_hz = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"sample_rate_hz must be a number, got {raw!r}") from None
+    if sample_rate_hz <= 0:
+        raise ValueError(f"sample_rate_hz must be > 0, got {sample_rate_hz}")
+    return sample_rate_hz
 
 
 def verify_output(path: str | Path) -> tuple[bool, str]:
@@ -96,7 +119,8 @@ def make_condition(
     table = load_conditions(conditions)
     if condition not in table:
         raise ValueError(f"Unknown condition {condition!r}. Available: {sorted(table)}.")
-    compose = build_compose(table[condition])
+    sample_rate_hz = load_sample_rate_hz(conditions)
+    compose = build_compose(table[condition], sample_rate_hz=sample_rate_hz)
 
     src_path = Path(resolve_data_path(config, path)[0])
     if out is not None:
@@ -124,6 +148,7 @@ def make_condition(
         print(f"[make_condition] source   : {src_path}")
         print(f"[make_condition] output   : {out_path}")
         print(f"[make_condition] condition: {condition}  (identity={compose.is_identity})")
+        print(f"[make_condition] f_s      : {sample_rate_hz if sample_rate_hz else 'not declared'}")
         print(f"[make_condition] theta    : {json.dumps(theta)}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +196,10 @@ def make_condition(
             fout.attrs["theta"] = json.dumps(theta)
             fout.attrs["theta_is_identity"] = bool(compose.is_identity)
             fout.attrs["rng_scheme"] = RNG_SCHEME
+            if sample_rate_hz is not None:
+                # The rate theta's per-Hz figures were converted against: without it, a sigma_w
+                # in the metadata is a number with no stated assumption behind it.
+                fout.attrs["sample_rate_hz"] = sample_rate_hz
             fout.attrs["condition_key"] = str(condition_key(condition))
             fout.attrs["content_checksum"] = f"blake2b16:{digest.hexdigest()}"
             fout.attrs["n_frames"] = int(n_frames)
