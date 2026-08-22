@@ -1,0 +1,35 @@
+data:
+  path: data/subset_fpp384_seed1234_snr-20_30_cond-quantization.hdf5
+  frames_per_pair: 384
+  subset_seed: 1234
+  snr_min: -20
+  snr_max: 30
+  split: [0.7, 0.15, 0.15]
+  split_seed: 5678
+  normalization: unit_power
+  preload: true
+model:
+  dropout_p: 0.4
+  init_scheme: kaiming_linear
+train:
+  seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+  batch_size: 256
+  num_workers: 0
+  optimizer:
+    name: adam
+    kwargs: {}
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler:
+    name: none
+    kwargs: {}
+  max_epochs: 100
+  early_stopping_enabled: false          # train the full budget; val_loss-based stopping was
+                                         # halting these runs at ~40 epochs with accuracy still climbing
+  early_stopping_patience: 10            # unused while disabled; kept so re-enabling is a one-line flip
+  early_stopping_metric: val_accuracy_snr_geq_0db  # the headline metric; also selects best.pt
+  amp_enabled: false
+experiment:
+  project: amc-hardware-domain-shift
+  condition: quantization_100
+  mode: online
