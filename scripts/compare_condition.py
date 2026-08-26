@@ -108,6 +108,17 @@ def dataset_facts(path: str | Path) -> DatasetFacts:
     )
 
 
+def read_predictions(npz_path: Path, seed: int) -> RunPredictions:
+    """Parse one cell's stored predictions, whichever split src.predict scored them on."""
+    with np.load(npz_path) as z:
+        return RunPredictions(
+            seed=seed, pred=z["pred"], true=z["true"], snr=z["snr"],
+            checkpoint=str(z["checkpoint"]) if "checkpoint" in z.files
+                       else _CHECKPOINT_BY_CONSTRUCTION,
+            run_id=str(z["run_id"]),
+        )
+
+
 def load_side(config: str | Path, runs_root: str | Path = _DEFAULT_RUNS_ROOT) -> Side:
     """Load one side: its config, its dataset's facts, and every seed's stored predictions."""
     config_path = resolve_config_path(str(config))
@@ -133,14 +144,7 @@ def load_side(config: str | Path, runs_root: str | Path = _DEFAULT_RUNS_ROOT) ->
         if not npz_path.exists():
             raise FileNotFoundError(f"{npz_path} missing -- the checkpoint is downloaded but "
                                     f"never scored. Run src.predict.run_all for {label!r}.")
-        with np.load(npz_path) as z:
-            runs[cell.cell.seed] = RunPredictions(
-                seed=cell.cell.seed,
-                pred=z["pred"], true=z["true"], snr=z["snr"],
-                checkpoint=str(z["checkpoint"]) if "checkpoint" in z.files
-                           else _CHECKPOINT_BY_CONSTRUCTION,
-                run_id=str(z["run_id"]),
-            )
+        runs[cell.cell.seed] = read_predictions(npz_path, cell.cell.seed)
 
     return Side(label=label, config_path=config_path,
                 dataset=dataset_facts(cfg.data.path), runs=runs)
