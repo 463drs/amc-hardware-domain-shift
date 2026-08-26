@@ -17,10 +17,12 @@ import pytest
 
 from src.config import Config, resolve_config_path
 from src.predict import (
+    _CROSS_DOMAIN_KEYS,
     Cell,
     CellDir,
     discover_cells,
     expected_cells,
+    predictions_name,
     verify_cells,
     verify_split,
 )
@@ -193,3 +195,23 @@ def test_an_unexpected_seed_of_this_condition_still_fails(tmp_path):
                      meta=_meta(cfg, seed=s)) for s in list(cfg.train.seeds) + [999]]
     with pytest.raises(RuntimeError, match="cell mismatch"):
         verify_cells(expected_cells(cfg), found)
+
+
+# Cross-domain scoring: a DIFFERENT file is the point, the same split still is not negotiable.
+
+def test_cross_domain_keys_tolerate_the_path_and_nothing_else():
+    """Off the diagonal the model is scored on another condition's file, so only `path` may move."""
+    cfg = _cfg()
+    verify_split(cfg, [_cell(cfg, path="other_condition.hdf5")], keys=_CROSS_DOMAIN_KEYS)
+    with pytest.raises(RuntimeError, match="differs from the training run"):
+        verify_split(cfg, [_cell(cfg, path="other_condition.hdf5", split_seed=999)],
+                     keys=_CROSS_DOMAIN_KEYS)
+
+
+def test_predictions_name_keeps_the_diagonal_where_it_already_is():
+    """Every in-domain file already on disk must stay findable under its historical name."""
+    assert predictions_name("all_100", "all_100") == "predictions.npz"
+    assert predictions_name("all_100", "baseline_100") == "predictions__on_baseline_100.npz"
+    # Distinct off-diagonal cells of one row must not collide in the same directory.
+    assert (predictions_name("all_100", "baseline_100")
+            != predictions_name("all_100", "phase_noise_100"))
