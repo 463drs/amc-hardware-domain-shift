@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Sequence, Set, Tuple
 
 import numpy as np
 import torch
@@ -26,6 +26,13 @@ from src.models import build_model
 # one-at-a-time, never which frames or what they contain.
 _VERIFIED_DATA_KEYS = ("path", "subset_seed", "split_seed", "frames_per_pair",
                        "snr_min", "snr_max", "split", "normalization")
+
+# Off the cross-domain diagonal, `path` differing IS the cell; everything else must still hold,
+# or the two files' test splits are not the same rows and the cell measures a split change too.
+_CROSS_DOMAIN_KEYS = tuple(k for k in _VERIFIED_DATA_KEYS if k != "path")
+
+# In-domain predictions keep the historical bare name, so every file already written stays put.
+_IN_DOMAIN_PREDICTIONS = "predictions.npz"
 
 
 def _normalize_data_value(key: str, value: object) -> object:
@@ -145,9 +152,11 @@ def predict(
         np.concatenate(snr).astype(np.int16),
     )
 
-def verify_split(cfg: Config, found: List[CellDir]) -> None:
-    """Refuse to evaluate a checkpoint whose training data config differs from this one."""
-    current = {k: _normalize_data_value(k, getattr(cfg.data, k)) for k in _VERIFIED_DATA_KEYS}
+def verify_split(cfg: Config, found: List[CellDir],
+                 keys: Tuple[str, ...] = _VERIFIED_DATA_KEYS) -> None:
+    """Refuse a checkpoint whose training data config differs from this one; `keys` narrows it
+    for the cross-domain matrix, where `path` is the one key meant to differ."""
+    current = {k: _normalize_data_value(k, getattr(cfg.data, k)) for k in keys}
 
     for c in found:
         stored = c.meta.get("config")
@@ -159,7 +168,7 @@ def verify_split(cfg: Config, found: List[CellDir]) -> None:
                 f"the run metadata (src.load_best_models) or remove the cell."
             )
 
-        missing = [k for k in _VERIFIED_DATA_KEYS if k not in trained]
+        missing = [k for k in keys if k not in trained]
         if missing:
             raise RuntimeError(
                 f"{c.cell}: stored data config is missing {missing}, so the training split "
@@ -169,7 +178,7 @@ def verify_split(cfg: Config, found: List[CellDir]) -> None:
         # Report every difference at once: fixing them one exception at a time is needless work.
         diffs = [
             (k, trained[k], getattr(cfg.data, k))
-            for k in _VERIFIED_DATA_KEYS
+            for k in keys
             if _normalize_data_value(k, trained[k]) != current[k]
         ]
         if diffs:
@@ -181,16 +190,19 @@ def verify_split(cfg: Config, found: List[CellDir]) -> None:
             )
 
 def save_predictions(
-    dest: Path, pred: np.ndarray, true: np.ndarray, snr: np.ndarray, meta: dict
+    dest: Path, pred: np.ndarray, true: np.ndarray, snr: np.ndarray, meta: dict,
+    filename: str = _IN_DOMAIN_PREDICTIONS, **extra: Any
 ) -> Path:
-    """Write predictions next to the checkpoint, self-describing."""
+    """Write predictions next to the checkpoint, self-describing. `filename` puts a cross-domain
+    scoring BESIDE the in-domain one rather than over it; `extra` records which split it was."""
     assert len(pred) == len(true) == len(snr), "prediction arrays are misaligned"
-    out = dest / "predictions.npz"
+    out = dest / filename
     np.savez_compressed(
         out,
         pred=pred, true=true, snr=snr,
         run_id=meta["run_id"],
         dataset_hash=meta["config"].get("dataset_hash", ""),
+        **extra,
     )
     return out
 
@@ -214,4 +226,51 @@ def run_all(cfg: Config, root: Path = Path("runs"), condition : str | None = Non
         model = load_model(c.path / "best.pt", cfg, device)
         pred, true, snr = predict(model, test_loader, device)
         written.append(save_predictions(c.path, pred, true, snr, c.meta))
+    return written
+
+
+def predictions_name(train_condition: str, eval_condition: str) -> str:
+    """Filename a cell's predictions live under, keyed by the split they were scored on."""
+    return (_IN_DOMAIN_PREDICTIONS if train_condition == eval_condition
+            else f"predictions__on_{eval_condition}.npz")
+
+
+def run_cross_domain(train_cfgs: Config | Sequence[Config], eval_cfg: Config,
+                     root: Path = Path("runs"), download: bool = False,
+                     overwrite: bool = False) -> List[Path]:
+    """Score every checkpoint of each train config on `eval_cfg`'s test split -- inference only.
+    Many train configs share one loader, and cells already on disk are reused, not rescored."""
+    if isinstance(train_cfgs, Config):
+        train_cfgs = [train_cfgs]
+    eval_label = eval_cfg.experiment.condition
+
+    todo: List[Tuple[Config, CellDir, Path]] = []
+    written: List[Path] = []
+    for train_cfg in train_cfgs:
+        train_label = train_cfg.experiment.condition
+        if download:
+            download_checkpoints_by_config(train_cfg)
+        found = discover_cells(root, train_label)
+        verify_cells(expected_cells(train_cfg), found)
+        keys = _VERIFIED_DATA_KEYS if train_label == eval_label else _CROSS_DOMAIN_KEYS
+        verify_split(eval_cfg, found, keys=keys)
+
+        name = predictions_name(train_label, eval_label)
+        for c in found:
+            out = c.path / name
+            written.append(out)
+            if overwrite or not out.exists():
+                todo.append((train_cfg, c, out))
+
+    if not todo:
+        return written
+
+    # Built only once something is missing: preload=true pulls the whole test split into RAM.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _, _, test_loader = build_dataloaders(eval_cfg, seed=0, verbose=False)
+    for train_cfg, c, out in todo:
+        model = load_model(c.path / "best.pt", train_cfg, device)
+        pred, true, snr = predict(model, test_loader, device)
+        save_predictions(c.path, pred, true, snr, c.meta, filename=out.name,
+                         trained_on=train_cfg.experiment.condition, evaluated_on=eval_label)
     return written
