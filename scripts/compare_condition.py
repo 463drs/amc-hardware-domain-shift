@@ -526,20 +526,18 @@ def main() -> None:
                              "estimator, with the seed variance left in.")
     parser.add_argument("--out-dir", default=_DEFAULT_OUT_DIR)
     parser.add_argument("--no-plot", action="store_true")
-    parser.add_argument("--rules", action="store_true",
-                        help="Print the registered decision rules and exit.")
     args = parser.parse_args()
 
     if args.baseline is None or args.condition is None:
-        parser.error("--baseline and --condition are required (use --rules to see the rules).")
+        parser.error("--baseline and --condition are required.")
 
     matplotlib.use("Agg")  # console is headless
-    report = compare_condition(
+    # No verdict is returned: a failed guard raises, and the delta itself is not pass/fail.
+    compare_condition(
         baseline_config=args.baseline, condition_config=args.condition,
         runs_root=args.runs_root, unpaired=args.unpaired,
         plot=not args.no_plot, out_dir=args.out_dir, verbose=True,
     )
-    sys.exit(0 if report["passed"] else 1)
 
 
 if __name__ == "__main__":

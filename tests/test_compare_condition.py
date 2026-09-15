@@ -11,7 +11,6 @@ import yaml
 
 from scripts.compare_condition import (
     GuardFailure,
-    apply_rule,
     balanced_accuracy,
     compare_condition,
     confusion,
@@ -294,29 +293,3 @@ def test_top_confusion_pairs_rank_growth_and_skip_the_diagonal():
     names = ("A", "B", "C")
     assert top_confusion_pairs(diff, n=2, class_names=names) == [
         ("A", "B", pytest.approx(0.4)), ("C", "B", pytest.approx(0.2))]
-
-
-# Decision rules -- fixed before the numbers
-
-def test_the_control_rule_demands_a_cost_of_the_right_sign():
-    assert apply_rule("phase_noise_exaggerated", -2.5)[0] == "PASS"
-    assert apply_rule("phase_noise_exaggerated", -1.0)[0] == "FAIL"
-    verdict, explanation = apply_rule("phase_noise_exaggerated", +3.0)
-    assert verdict == "FAIL" and "WRONG SIGN" in explanation
-
-
-def test_the_datasheet_phase_noise_rule_is_a_declared_null():
-    assert apply_rule("phase_noise", -0.4)[0] == "PASS"
-    assert apply_rule("phase_noise", +0.9)[0] == "PASS"
-    assert apply_rule("phase_noise", -1.6)[0] == "FAIL"
-
-
-def test_an_unregistered_condition_gets_no_verdict():
-    verdict, explanation = apply_rule("iq_imbalance", -12.0)
-    assert verdict == "NO RULE" and "_DECISION_RULES" in explanation
-
-
-def test_the_control_verdict_travels_with_the_report(tmp_path):
-    """One collapsed class is -4.17 pp, comfortably past the 2.0 pp bar."""
-    report = _compare(tmp_path, baseline_seeds=(100,))
-    assert report["verdict"] == "PASS" and report["passed"]

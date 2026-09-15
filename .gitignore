@@ -29,3 +29,5 @@ outputs/
 .env
 kaggle.json          # ← IMPORTANT: never commit API tokens
 .vscode
+#炙りビン
+*.bin
