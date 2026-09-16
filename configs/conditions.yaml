@@ -44,11 +44,18 @@ conditions:
       - name: quantize
         kwargs: {n_bits: 8}
 
-  # TODO: awaiting bench measurement of the actual receiver; values below are placeholders
-  # and this condition must NOT be generated until they are measured. The measured L goes in
-  # as (phase_noise_dbc_hz, offset_hz), like the datasheet figure above.
+  # Measured on the bench (HackRF -> 30 dB -> RTL-SDR V4, -g 19.7, fs = 1.024 MS/s).
+  # Phase noise: sigma_w_hat = 6.76e-4 rad/sample, UPPER BOUND (TX+RX) -> L(10 kHz) = -99.26 dBc/Hz.
+  # IQ imbalance: image below measurement floor (IRR < -70 dB) -> identity (low-IF, digital quadrature).
+  # Quantization: identical to `quantization` (no mod.bin loading measurement).
   calibrated:
-    - name: phase_noise
-      kwargs: {sigma_w: 0.0}
-    - name: iq_imbalance
-      kwargs: {gain_db: 0.0, phase_deg: 0.0}
+    reference: *reference
+    operators:
+      - name: phase_noise
+        kwargs:
+          phase_noise_dbc_hz: -99.26
+          offset_hz: 1.0e+4
+      - name: iq_imbalance
+        kwargs: {gain_db: 0.0, phase_deg: 0.0}
+      - name: quantize
+        kwargs: {n_bits: 8}
