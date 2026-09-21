@@ -16,13 +16,19 @@ import yaml
 
 from scripts.compare_all_conditions import (
     GuardFailure,
+    benjamini_hochberg,
     check_guards,
+    class_recall_by_seed,
     cross_domain_matrix,
     degenerate_counts,
+    holm,
     load_matrix,
+    noise_floor,
     off_diagonal_cost,
     paired_deltas,
+    paired_wilcoxon,
     psk_recall,
+    significance,
     summary_table,
 )
 from src.data import KEY_X, MODULATION_CLASSES
@@ -206,6 +212,63 @@ def test_the_three_thresholds_bracket_a_partly_degraded_class(tmp_path):
     matrix = load_matrix(paths, baseline=paths[0], runs_root=runs)
     assert psk_recall(matrix, "cond_a")[0].tolist() == pytest.approx([0.25] * len(SEEDS))
     assert degenerate_counts(matrix)["cond_a"] == {0.20: 0, 0.25: 0, 0.30: len(SEEDS)}
+
+
+# Significance and the seed-to-seed noise floor
+
+def test_holm_matches_the_step_down_by_hand():
+    """Sorted 0.01, 0.02, 0.04 -> 3*0.01, max(that, 2*0.02), max(that, 1*0.04); input order kept."""
+    assert holm([0.04, 0.01, 0.02]).tolist() == pytest.approx([0.04, 0.03, 0.04])
+    assert holm([0.5, 0.6]).tolist() == pytest.approx([1.0, 1.0])     # capped at 1
+
+
+def test_bh_matches_the_step_up_by_hand():
+    """Sorted 0.01, 0.02, 0.04 -> 3*0.01/1, 3*0.02/2, 3*0.04/3, then running min from the top."""
+    assert benjamini_hochberg([0.04, 0.01, 0.02]).tolist() == pytest.approx([0.04, 0.03, 0.03])
+    assert benjamini_hochberg([0.01, 0.9]).tolist() == pytest.approx([0.02, 0.9])
+
+
+def test_bh_is_never_stricter_than_holm():
+    p = [0.001, 0.008, 0.039, 0.041, 0.2]
+    assert np.all(benjamini_hochberg(p) <= holm(p) + 1e-12)
+
+
+def test_exact_wilcoxon_reaches_its_floor_when_every_seed_agrees_in_sign():
+    """Ten same-signed deltas: exact two-sided p is 2 / 2**10, the smallest n = 10 can give."""
+    result = paired_wilcoxon(-np.arange(1, 11) / 100)
+    assert result["p"] == pytest.approx(2 / 2 ** 10)
+    assert result["median"] == pytest.approx(-0.055) and result["n"] == 10
+    assert result["iqr"] == pytest.approx(0.045)
+
+
+def test_all_zero_differences_are_p_one_not_an_error():
+    assert paired_wilcoxon(np.zeros(4))["p"] == 1.0
+
+
+def test_significance_tests_every_condition_against_the_baseline(tmp_path):
+    """cond_a loses one class on every seed; cond_b is identical to the baseline. Four seeds
+    give an exact floor of 2 / 16, and Holm over the family of two doubles it."""
+    matrix = _matrix(tmp_path, collapsed=lambda t, e, s: (0,) if t == "cond_a" else ())
+    tests = significance(matrix)
+    assert set(tests) == {"cond_a", "cond_b"}
+    assert tests["cond_a"]["median"] == pytest.approx(-1 / N_CLASSES)
+    assert tests["cond_a"]["p"] == pytest.approx(2 / 2 ** len(SEEDS))
+    assert tests["cond_a"]["p_holm"] == pytest.approx(2 * 2 / 2 ** len(SEEDS))
+    assert tests["cond_b"]["p"] == tests["cond_b"]["p_holm"] == 1.0
+
+
+def test_noise_floor_is_zero_when_every_seed_agrees(tmp_path):
+    matrix = _matrix(tmp_path, collapsed=lambda t, e, s: (0,) if t == "cond_a" else ())
+    assert noise_floor(matrix, "cond_a") == pytest.approx(0.0)
+
+
+def test_noise_floor_is_the_median_pairwise_mean_recall_distance(tmp_path):
+    """Each seed collapses a DIFFERENT class, so any two seeds differ by a full 1.0 of recall in
+    exactly two classes: every pair, and so the median, sits at 2 / 24."""
+    matrix = _matrix(tmp_path, collapsed=lambda t, e, s: (s - SEEDS[0],) if t == "cond_b" else ())
+    recall = class_recall_by_seed(matrix, "cond_b")
+    assert recall.shape == (len(SEEDS), N_CLASSES)
+    assert noise_floor(matrix, "cond_b") == pytest.approx(2 / N_CLASSES)
 
 
 # Part 2 -- the cross-domain matrix

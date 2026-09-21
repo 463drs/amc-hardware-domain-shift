@@ -12,6 +12,8 @@ from typing import Dict, List, Sequence, Tuple
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import ArrayLike
+from scipy.stats import wilcoxon
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -289,6 +291,85 @@ def print_summary(matrix: Matrix, threshold: float = _DEGENERATE_THRESHOLD) -> D
     return rows
 
 
+# Significance and seed-to-seed noise
+
+def holm(p_values: ArrayLike) -> np.ndarray:
+    """Holm step-down adjusted p-values (FWER), in the input order."""
+    p = np.asarray(p_values, dtype=float)
+    order = np.argsort(p)
+    adjusted = np.maximum.accumulate((p.size - np.arange(p.size)) * p[order])
+    out = np.empty_like(p)
+    out[order] = np.minimum(1.0, adjusted)
+    return out
+
+
+def benjamini_hochberg(p_values: ArrayLike) -> np.ndarray:
+    """Benjamini-Hochberg adjusted p-values (FDR), in the input order."""
+    p = np.asarray(p_values, dtype=float)
+    order = np.argsort(p)
+    scaled = p[order] * p.size / np.arange(1, p.size + 1)
+    out = np.empty_like(p)
+    out[order] = np.minimum(1.0, np.minimum.accumulate(scaled[::-1])[::-1])
+    return out
+
+
+def paired_wilcoxon(differences: ArrayLike) -> dict:
+    """Exact two-sided Wilcoxon signed-rank on per-seed paired differences, with median and IQR.
+    All-zero differences carry no evidence either way, so p is 1 rather than an error."""
+    d = np.asarray(differences, dtype=float)
+    q1, median, q3 = np.percentile(d, [25, 50, 75])
+    p = 1.0 if not np.any(d) else float(wilcoxon(d, method="exact").pvalue)
+    return {"median": float(median), "q25": float(q1), "q75": float(q3),
+            "iqr": float(q3 - q1), "p": p, "n": d.size}
+
+
+def significance(matrix: Matrix) -> Dict[str, dict]:
+    """Each condition's paired deltas vs the baseline, tested; Holm and BH over that family."""
+    deltas = paired_deltas(matrix)
+    family = [c for c in matrix.conditions if c != matrix.baseline]
+    tests = {c: paired_wilcoxon(deltas[c]) for c in family}
+    p = [tests[c]["p"] for c in family]
+    for c, h, b in zip(family, holm(p), benjamini_hochberg(p)):
+        tests[c].update(p_holm=float(h), p_bh=float(b))
+    return tests
+
+
+def class_recall_by_seed(matrix: Matrix, condition: str) -> np.ndarray:
+    """(seed, class) recall at SNR >= 0 dB for a condition's models on their own test split."""
+    runs = matrix.cell(condition, condition)
+    rows = []
+    for seed in matrix.seeds:
+        r = runs[seed]
+        high = r.snr >= HIGH_SNR_MIN
+        rows.append(per_class_recall(r.pred[high], r.true[high]))
+    return np.array(rows)
+
+
+def noise_floor(matrix: Matrix, condition: str) -> float:
+    """Median over seed pairs of the mean |recall_i - recall_j| over classes: how far two runs of
+    the SAME condition sit apart, the yardstick a class-recall shift must exceed."""
+    recall = class_recall_by_seed(matrix, condition)
+    pairs = [(i, j) for i in range(len(recall)) for j in range(i + 1, len(recall))]
+    return float(np.median([np.nanmean(np.abs(recall[i] - recall[j])) for i, j in pairs]))
+
+
+def print_significance(matrix: Matrix) -> Dict[str, dict]:
+    tests = significance(matrix)
+    print(f"\n--- significance vs {matrix.baseline}: exact two-sided Wilcoxon signed-rank, paired "
+          f"by seed, n = {len(matrix.seeds)} ---")
+    print(f"  family of {len(tests)}; Holm controls FWER, BH controls FDR. With n = "
+          f"{len(matrix.seeds)} the smallest attainable raw p is {2 / 2 ** len(matrix.seeds):.4f}.")
+    print(f"\n  {'condition':<20}{'median':>9}{'IQR':>9}{'p':>9}{'p_holm':>9}{'p_BH':>9}"
+          f"{'floor (pp)':>12}")
+    print(f"  {matrix.baseline:<20}{'':>45}{100 * noise_floor(matrix, matrix.baseline):>12.2f}")
+    for c, t in tests.items():
+        print(f"  {c:<20}{100 * t['median']:>+9.2f}{100 * t['iqr']:>9.2f}{t['p']:>9.4f}"
+              f"{t['p_holm']:>9.4f}{t['p_bh']:>9.4f}{100 * noise_floor(matrix, c):>12.2f}")
+    print("  floor = median over seed pairs of mean |recall_i - recall_j| over classes, SNR >= "
+          f"{HIGH_SNR_MIN} dB.")
+    return tests
+
+
 # Part 2 -- the cross-domain matrix
 
 def cross_domain_matrix(matrix: Matrix) -> np.ndarray:
@@ -402,9 +483,11 @@ def compare_all_conditions(conditions: Sequence[str] = _DEFAULT_CONDITIONS,
     guards = check_guards(matrix, verbose=verbose)
 
     rows = print_summary(matrix, threshold) if verbose else summary_table(matrix, threshold)
+    tests = print_significance(matrix) if verbose else significance(matrix)
     values = print_cross_domain(matrix) if verbose else cross_domain_matrix(matrix)
 
-    report = {"matrix": matrix, "guards": guards, "summary": rows,
+    report = {"matrix": matrix, "guards": guards, "summary": rows, "significance": tests,
+              "noise_floor": {c: noise_floor(matrix, c) for c in matrix.conditions},
               "cross_domain": values, "cross_domain_cost": off_diagonal_cost(values),
               "degenerate": degenerate_counts(matrix), "figures": {}}
 
