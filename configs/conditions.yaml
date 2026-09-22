@@ -44,12 +44,49 @@ conditions:
       - name: quantize
         kwargs: {n_bits: 8}
 
-  # Measured on the bench (HackRF -> 30 dB -> RTL-SDR V4, -g 19.7, fs = 1.024 MS/s).
+  # Measured on the bench (HackRF -> 30 dB -> RTL-SDR V4, fs = 1.024 MS/s).
+  # Two gains appear in this study and both are correct, for different runs:
+  #   -g 19.7 = the BENCH CALIBRATION run that measured theta-hat (sigma_w and the IRR floor below).
+  #   -g 25.4 = the CAPTURE run that produced the frozen real set, data/real_captures_2db_noise-bw.hdf5
+  #             (scripts/measure/capture_all.py RX_GAIN, and rf_setup.rx_gain_db in that file's metadata).
+  # sigma_w_hat is 6.76e-4 rad/sample at -g 19.7 and 6.62e-4 at -g 25.4, 2 % apart, so the
+  # calibration transfers to the capture gain.
   # Phase noise: sigma_w_hat = 6.76e-4 rad/sample, UPPER BOUND (TX+RX) -> L(10 kHz) = -99.26 dBc/Hz.
   # IQ imbalance: image below measurement floor (IRR < -70 dB) -> identity (low-IF, digital quadrature).
   # Quantization: identical to `quantization` (no mod.bin loading measurement).
   calibrated:
     reference: *reference
+    operators:
+      - name: phase_noise
+        kwargs:
+          phase_noise_dbc_hz: -99.26
+          offset_hz: 1.0e+4
+      - name: iq_imbalance
+        kwargs: {gain_db: 0.0, phase_deg: 0.0}
+      - name: quantize
+        kwargs: {n_bits: 8}
+
+  # All three theta coordinates measured on this receiver (HackRF -> 30 dB -> RTL-SDR V4,
+  # AGC off, fs = 1.024 MS/s). Differs from `calibrated` only in the full-scale reference:
+  # there the ADC LOADING was left uncalibrated, and a per-frame percentile reference put
+  # every frame at full scale (ENOB ~7.1) against the real receiver's ~1.05.
+  # Phase noise: sigma_w_hat = 6.76e-4 rad/sample at -g 19.7, 6.62e-4 at -g 25.4 (2 %
+  #   apart) -> L(10 kHz) = -99.26 dBc/Hz.
+  # IQ imbalance: image below the measurement floor (IRR < -70 dB) -> identity.
+  # ADC loading (adc_loading.csv, captures at -g 25.4, fixed gain, AGC off): median
+  #   rms_lsb_real 0.7295, ENOB 1.045, 6 codes per frame, 34 dB below full scale.
+  #   full_scale SOLVED numerically so the QUANTIZED output matches rms_lsb 0.7295 -- the
+  #   real column is measured on ADC codes, so it already carries the quantizer's own
+  #   error. First-order check: 128 * rms_source / sqrt(rms_target^2 - 1/12)
+  #   = 128 * 0.7113 / 0.6700 = 135.9, against the solved 135.75.
+  #   In the source subset's amplitude units -- valid ONLY for
+  #   subset_fpp384_seed1234_snr-20_30.hdf5, whose per-branch rms is 0.711 in every bin.
+  #   Consequence of that flat source rms: ENOB is FLAT across SNR (~1.05), where the real
+  #   receiver slopes 0.79 -> 1.98, since there the transmit power fell and the gain did not.
+  calibrated_full:
+    reference:
+      name: fixed
+      kwargs: {full_scale: 135.75}
     operators:
       - name: phase_noise
         kwargs:

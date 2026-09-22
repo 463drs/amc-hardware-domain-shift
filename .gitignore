@@ -27,7 +27,9 @@ outputs/
 
 # env / secrets
 .env
-kaggle.json          # ← IMPORTANT: never commit API tokens
+kaggle.json
 .vscode
 #炙りビン
 *.bin
+
+manifest.json
